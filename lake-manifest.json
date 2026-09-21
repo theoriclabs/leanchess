@@ -3,6 +3,13 @@
  "packages":
  [{"type": "path",
    "scope": "",
+   "name": "leanreact",
+   "manifestFile": "lake-manifest.json",
+   "inherited": false,
+   "dir": "../leanreact",
+   "configFile": "lakefile.toml"},
+  {"type": "path",
+   "scope": "",
    "name": "leandb",
    "manifestFile": "lake-manifest.json",
    "inherited": false,

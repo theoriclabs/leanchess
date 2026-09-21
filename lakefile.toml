@@ -6,9 +6,13 @@ defaultTargets = ["LeanChess", "ExampleCases"]
 name = "leandb"
 path = "../leandb"
 
+[[require]]
+name = "leanreact"
+path = "../leanreact"
+
 [[lean_lib]]
 name = "LeanChess"
-globs = ["LeanChess", "domain.Game", "domain.Deep", "domain.Lazier"]
+globs = ["LeanChess", "domain.Game", "domain.Deep", "domain.Lazier", "domain.Semantics"]
 
 [[lean_lib]]
 name = "ExampleCases"
@@ -18,6 +22,10 @@ roots = ["example_cases.flows"]
 [[lean_lib]]
 name = "api"
 globs = ["api.+"]
+
+[[lean_lib]]
+name = "ui"
+globs = ["ui.App"]
 
 [[lean_exe]]
 name = "leanchess-api"

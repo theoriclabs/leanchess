@@ -7,6 +7,7 @@
 import LeanDb
 import api.Store
 import api.Wire
+import domain.Semantics
 
 namespace LeanChess.Api
 
@@ -41,11 +42,6 @@ def freshToken : IO String := do
   for b in bytes do
     n := n * 256 + b.toNat
   return toString n
-
-def changed (before after : GameState) : Bool :=
-  before.ply != after.ply || before.ending != after.ending || before.offer != after.offer ||
-    before.position != after.position || before.whiteMs != after.whiteMs ||
-    before.blackMs != after.blackMs || before.runningSince != after.runningSince
 
 def replay (g : GameRow) (white black : User) : Except String (Agreement × List GameEvent × GameState) := do
   let events ← g.acts.mapM fun a => parseAct a.wire
@@ -116,8 +112,9 @@ def openGame (caller : Stored User) (body : Json) : DbM (Except Fail (Nat × Jso
   | some other =>
       let (white, black) :=
         if color == .white then (caller.id, other.id) else (other.id, caller.id)
+      let start ← IO.monoMsNow
       let row ← insert GameRow {
-        white, black, rated, initialMs := clockMs, incrementMs := inc, startMs := 0, acts := [] }
+        white, black, rated, initialMs := clockMs, incrementMs := inc, startMs := start, acts := [] }
       match ← loadPair row.val with
       | .error e => return .error e
       | .ok (w, b) =>
@@ -125,9 +122,10 @@ def openGame (caller : Stored User) (body : Json) : DbM (Except Fail (Nat × Jso
           return .ok (201, Json.mkObj [
             ("ok", .bool true),
             ("id", toJson (idNum row.id)),
+            ("now", toJson start),
             ("white", .str w.val.name),
             ("black", .str b.val.name),
-            ("look", lookJson s ⟨0⟩ (youAre caller.id row.val) none)])
+            ("look", lookJson s ⟨start⟩ (youAre caller.id row.val) none)])
 
 def requireGame (id : Int64) : DbM (Except Fail (Stored GameRow)) := do
   match ← gameById id with
@@ -171,9 +169,13 @@ def lookAt (caller : Stored User) (id : Int64) (when? : Option Nat) :
                 | .moved _ t | .resigned _ t | .drawOffered _ t | .drawAccepted _ t
                 | .drawDeclined _ t | .claimedThreefold _ _ t | .claimedFifty _ _ t
                 | .aborted _ t => t.ms)) g.val.startMs
+          let now ← IO.monoMsNow
           return .ok (200, Json.mkObj [
             ("ok", .bool true),
             ("id", toJson (idNum g.id)),
+            ("now", toJson now),
+            ("white", .str w.val.name),
+            ("black", .str b.val.name),
             ("log", .arr (g.val.acts.map (fun a => Json.str a.wire)).toArray),
             ("look", lookJson s ⟨d⟩ (youAre caller.id g.val) none)])
 
@@ -201,9 +203,13 @@ def attempt (caller : Stored User) (id : Int64) (body : Json) :
           let g ← if !admitted then pure g else
               update g { g.val with acts := g.val.acts ++ [⟨renderAct ev⟩] }
           let d := ⟨instant⟩
+          let now ← IO.monoMsNow
           return .ok (200, Json.mkObj [
             ("ok", .bool true),
             ("id", toJson (idNum g.id)),
+            ("now", toJson now),
+            ("white", .str w.val.name),
+            ("black", .str b.val.name),
             ("log", .arr (g.val.acts.map (fun a => Json.str a.wire)).toArray),
             ("look", lookJson (if admitted then after else before) d (youAre caller.id g.val) (some admitted))])
 

@@ -1,0 +1,83 @@
+:root {
+  color: #1c1915;
+  background: #f4f0e6;
+  font-family: "Iowan Old Style", Palatino, "Palatino Linotype", serif;
+}
+
+* { box-sizing: border-box; }
+
+body { margin: 0; }
+
+.page {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 24px 16px 48px;
+}
+
+.panel, .table { margin-bottom: 20px; }
+
+h1 { font-size: 1.6rem; margin: 0; font-weight: 600; }
+
+header, .row-form, .controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+header { justify-content: space-between; margin-bottom: 16px; }
+
+label { font-size: 0.95rem; }
+
+input {
+  font: inherit;
+  padding: 8px 10px;
+  border: 1px solid #c4b8a2;
+  background: #fffdf8;
+  min-width: 0;
+  flex: 1;
+}
+
+button {
+  font: inherit;
+  padding: 8px 12px;
+  border: 1px solid #1c1915;
+  background: #fffdf8;
+  cursor: pointer;
+}
+
+button.primary { background: #1c1915; color: #f4f0e6; }
+
+.note, .meta, .status, .clock { margin: 8px 0; }
+
+.clock { font-variant-numeric: tabular-nums; }
+
+.board {
+  width: min(100%, 480px);
+  border: 1px solid #1c1915;
+}
+
+.rank { display: flex; }
+
+.sq {
+  width: 12.5%;
+  aspect-ratio: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: clamp(1.4rem, 6vw, 2.4rem);
+  line-height: 1;
+  border: 0;
+  padding: 0;
+}
+
+.sq.light { background: #f3e6c8; }
+.sq.dark { background: #8d9a78; }
+.sq.selected { outline: 3px solid #1c1915; outline-offset: -3px; }
+
+.controls { margin-top: 12px; }
+
+@media (max-width: 640px) {
+  .page { padding: 16px 12px 32px; }
+  header { align-items: flex-start; }
+}

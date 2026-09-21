@@ -42,7 +42,13 @@ def respond (status : Nat) (j : Json) : ContextAsync (Response Body.Any) := do
     else if status == 409 then .conflict
     else .internalServerError
   let r ← (Response.withStatus code).json j.compress
-  return { line := r.line, body := Body.Any.ofBody r.body, extensions := r.extensions }
+  let allow (line : Response.Head) (k v : String) : Response.Head :=
+    { line with headers := line.headers.insert (Header.Name.ofString! k) (Header.Value.ofString! v) }
+  -- The page is another origin. The token still has to be presented.
+  let line := allow r.line "access-control-allow-origin" "*"
+  let line := allow line "access-control-allow-headers" "authorization, content-type"
+  let line := allow line "access-control-allow-methods" "GET, POST, OPTIONS"
+  return { line, body := Body.Any.ofBody r.body, extensions := r.extensions }
 
 def bearerHeader (req : Request Body.Stream) : Option String :=
   req.line.headers.get? (Header.Name.ofString! "authorization") |>.map toString
@@ -61,7 +67,7 @@ def parseId (s : String) : Option Int64 :=
 def handle (lock : Std.Mutex Conn) (req : Request Body.Stream) : ContextAsync (Response Body.Any) := do
   let method := (toString req.line.method).toUpper
   let segs := (req.line.uri.path.toDecodedSegments.toList).filter (!·.isEmpty)
-  if method == "GET" && segs == ["healthz"] then
+  if method == "OPTIONS" || (method == "GET" && segs == ["healthz"]) then
     return ← respond 200 (Json.mkObj [("ok", .bool true)])
   let some bytes ← readBody req.body (2 * 1024 * 1024) |
     return ← respond 400 (Json.mkObj [("ok", .bool false), ("error", .str "request body too large")])

@@ -579,7 +579,7 @@ structure GameState where
   ending : Option Ending
   history : List PosKey
   ply : Nat
-  deriving Repr
+  deriving Repr, DecidableEq
 
 def elapsed (s : GameState) (t : Instant) : Nat :=
   if t.ms < s.runningSince.ms then 0 else t.ms - s.runningSince.ms
