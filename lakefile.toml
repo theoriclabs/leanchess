@@ -1,7 +1,24 @@
 name = "leanchess"
 version = "0.1.0"
-defaultTargets = ["LeanChess"]
+defaultTargets = ["LeanChess", "ExampleCases"]
+
+[[require]]
+name = "leandb"
+path = "../leandb"
 
 [[lean_lib]]
 name = "LeanChess"
-globs = ["LeanChess", "domain.Game"]
+globs = ["LeanChess", "domain.Game", "domain.Deep", "domain.Lazier"]
+
+[[lean_lib]]
+name = "ExampleCases"
+globs = ["example_cases.+"]
+roots = ["example_cases.flows"]
+
+[[lean_lib]]
+name = "api"
+globs = ["api.+"]
+
+[[lean_exe]]
+name = "leanchess-api"
+root = "api.Main"

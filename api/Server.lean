@@ -1,0 +1,122 @@
+/-
+  HTTP surface. Loopback. A token from registration is the person.
+
+  POST /users                  { "name", "autoClaim"? }
+  POST /games                  Authorization: Bearer <token>
+                               { "opponent", "color"?, "rated"?, "initialMs"?, "incrementMs"? }
+  GET  /games/<id>?at=<ms>     Authorization: Bearer <token>
+  POST /games/<id>/acts        Authorization: Bearer <token>
+                               { "kind", "at", "from"?, "to"?, "promotion"?, "claim"?, "seat"? }
+
+  `kind` is play, resign, offer, accept, decline, claim, or abort.
+  The seat is the person the token names. A client does not send the
+  position or the clock; the response look is the fold.
+-/
+
+import Std.Http
+import Std.Sync.Mutex
+import LeanDb
+import api.Service
+
+namespace LeanChess.Api
+
+open Lean LeanDb Std Std.Http Std.Async
+
+partial def readBody (stream : Body.Stream) (limit : Nat) : ContextAsync (Option ByteArray) := do
+  let rec loop (bytes : ByteArray) : ContextAsync (Option ByteArray) := do
+    match ← Body.Stream.NextChunk.nextChunk stream with
+    | none => return some bytes
+    | some chunk =>
+        if bytes.size + chunk.data.size > limit then return none
+        loop (bytes ++ chunk.data)
+  loop ByteArray.empty
+
+def respond (status : Nat) (j : Json) : ContextAsync (Response Body.Any) := do
+  let code : Status :=
+    if status == 200 then .ok
+    else if status == 201 then .created
+    else if status == 400 then .badRequest
+    else if status == 401 then .unauthorized
+    else if status == 403 then .forbidden
+    else if status == 404 then .notFound
+    else if status == 409 then .conflict
+    else .internalServerError
+  let r ← (Response.withStatus code).json j.compress
+  return { line := r.line, body := Body.Any.ofBody r.body, extensions := r.extensions }
+
+def bearerHeader (req : Request Body.Stream) : Option String :=
+  req.line.headers.get? (Header.Name.ofString! "authorization") |>.map toString
+
+def queryPairs (req : Request Body.Stream) : List (String × String) :=
+  req.line.uri.query.toList.filterMap fun (k, v) => do
+    let k ← k.decode
+    some (k, (v.bind (·.decode)).getD "")
+
+def parseId (s : String) : Option Int64 :=
+  match s.toInt? with
+  | some i =>
+      if i < 0 || i > Int64.maxValue.toInt then none else some (Int64.ofInt i)
+  | none => none
+
+def handle (lock : Std.Mutex Conn) (req : Request Body.Stream) : ContextAsync (Response Body.Any) := do
+  let method := (toString req.line.method).toUpper
+  let segs := (req.line.uri.path.toDecodedSegments.toList).filter (!·.isEmpty)
+  if method == "GET" && segs == ["healthz"] then
+    return ← respond 200 (Json.mkObj [("ok", .bool true)])
+  let some bytes ← readBody req.body (2 * 1024 * 1024) |
+    return ← respond 400 (Json.mkObj [("ok", .bool false), ("error", .str "request body too large")])
+  let body? := if bytes.isEmpty then none else String.fromUTF8? bytes
+  let json? : Except String Json := match body? with
+    | none => .ok .null
+    | some s => Json.parse s |>.mapError fun e => s!"body is not JSON: {e}"
+  let run (act : DbM (Except Fail (Nat × Json))) : ContextAsync (Response Body.Any) := do
+    let result ← lock.atomically fun ref => do
+      DbM.run (← ref.get) act
+    match result with
+    | .error e => respond 500 (Json.mkObj [("ok", .bool false), ("error", .str (toString e))])
+    | .ok (.error f) => respond f.status f.json
+    | .ok (.ok (status, j)) => respond status j
+  match json? with
+  | .error m => respond 400 (Json.mkObj [("ok", .bool false), ("error", .str m)])
+  | .ok body =>
+      match method, segs with
+      | "POST", ["users"] => run (register body)
+      | "POST", ["games"] =>
+          run do
+            match ← bearer (bearerHeader req) with
+            | .error e => return .error e
+            | .ok u => openGame u body
+      | "GET", ["games", id] =>
+          match parseId id with
+          | none => respond 400 (Json.mkObj [("ok", .bool false), ("error", .str "game id is a number")])
+          | some id =>
+              let when? := (queryPairs req).find? (·.1 == "at") |>.bind fun p => p.2.toNat?
+              run do
+                match ← bearer (bearerHeader req) with
+                | .error e => return .error e
+                | .ok u => lookAt u id when?
+      | "POST", ["games", id, "acts"] =>
+          match parseId id with
+          | none => respond 400 (Json.mkObj [("ok", .bool false), ("error", .str "game id is a number")])
+          | some id =>
+              run do
+                match ← bearer (bearerHeader req) with
+                | .error e => return .error e
+                | .ok u => attempt u id body
+      | _, _ => respond 404 (Json.mkObj [("ok", .bool false), ("error", .str "no such route")])
+
+def serve (db : Conn) (port : UInt16) : IO UInt32 := do
+  let addr : Net.SocketAddress := .v4 { addr := Net.IPv4Addr.ofParts 127 0 0 1, port }
+  let lock ← Std.Mutex.new db
+  let handler := Std.Http.Server.Handler.ofFn (handle lock)
+  IO.eprintln (Json.mkObj [
+    ("event", .str "leanchess.ready"),
+    ("host", .str "127.0.0.1"),
+    ("port", toJson port.toNat)]).compress
+  let config : Std.Http.Config := { generateDate := false }
+  Async.block do
+    let server ← Std.Http.Server.serve addr handler config
+    server.waitShutdown
+  return 0
+
+end LeanChess.Api

@@ -117,4 +117,5 @@ Gate: every requirement has one verdict. `admissible` names a witness. `gap` and
 | Vision | `vision.md`. Optative. It does not enter the query universe. Later requirements are cut from it. |
 | Vocabulary | `vocabulary.md`. |
 | Open stage | 3, Lean model. `domain/Game.lean` defines the game. `lake build` succeeds. The gate is not a checker yet. |
-| Next artifact | `example_cases/`, when a story is played through the definition. |
+| Flows | `userflows.md` is the prose. `example_cases/flows.lean` inhabits them: one agreement, one log, one look. `lake build ExampleCases`. |
+| Next artifact | Laws, when this gate is taken as passed. Five endings in the prose have no short log from the opening: stalemate, a dead position, seventy-five moves, a fifty-move claim that holds, and resignation in a dead position. |
