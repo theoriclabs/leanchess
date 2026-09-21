@@ -1,0 +1,7 @@
+name = "leanchess"
+version = "0.1.0"
+defaultTargets = ["LeanChess"]
+
+[[lean_lib]]
+name = "LeanChess"
+globs = ["LeanChess", "domain.Game"]
