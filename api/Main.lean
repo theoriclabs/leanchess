@@ -48,9 +48,28 @@ def main (args : List String) : IO UInt32 := do
       return 1
   if let some parent := path.parent then IO.FS.createDirAll parent
   let web ← LeanChess.Api.loadWeb (arg args "--web" "")
-  match ← LeanDb.openDb path LeanChess.Api.schema with
+  let conn ← match ← LeanDb.openDbRaw path with
+    | .ok conn => pure conn
+    | .error e =>
+        IO.eprintln (toString e)
+        return 1
+  -- A release that changes the schema carries its migration. An additive
+  -- one (a column with a default, an index, an invariant) is applied here,
+  -- after a backup beside the file. A destructive one is refused, and the
+  -- server does not start until a person migrates by hand.
+  let tag := (← IO.getRandomBytes 4).foldl (fun acc b => acc ++ (Nat.toDigits 16 b.toNat).asString) ""
+  let backup : System.FilePath := path.toString ++ s!".before-migration-{tag}"
+  match ← LeanDb.migrateOn conn LeanChess.Api.schema { apply := true, backup := some backup } with
+  | .error e =>
+      IO.eprintln s!"migration refused: {e}"
+      return 1
+  | .ok (_, some report) =>
+      unless report.applied.isEmpty do
+        IO.eprintln s!"migrated: {report.applied}; backup {backup}"
+  | .ok (_, none) => pure ()
+  match ← conn.verify LeanChess.Api.schema with
   | .error e =>
       IO.eprintln (toString e)
       return 1
-  | .ok conn =>
+  | .ok () =>
       LeanChess.Api.serve conn host hostName port web

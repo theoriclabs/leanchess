@@ -157,6 +157,33 @@ h2 { font-size: 1.05rem; font-weight: 600; }
 .sq.moved.dark { background: var(--moved-dark); }
 .sq.selected { box-shadow: inset 0 0 0 3px var(--ink); }
 .sq.check { background: #d4655a; }
+.sq.target::after {
+  content: "";
+  position: absolute;
+  width: 28%;
+  height: 28%;
+  border-radius: 50%;
+  background: rgba(36, 31, 26, 0.28);
+  pointer-events: none;
+}
+.sq.target.take::after {
+  width: 86%;
+  height: 86%;
+  background: transparent;
+  box-shadow: inset 0 0 0 4px rgba(36, 31, 26, 0.3);
+}
+
+.promote {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+}
+.promote button {
+  font-size: 2rem;
+  line-height: 1;
+  padding: 6px 12px;
+  font-variant-emoji: text;
+}
 
 .coord {
   position: absolute;

@@ -45,13 +45,11 @@ def freshToken : IO String := do
     n := n * 256 + b.toNat
   return toString n
 
-/-- The stored log, reconstructed and checked: every act decodes, and the
-    sequence is one the admission would have written (`validLog`). A row
-    that is not is refused, not folded. -/
-def replay (g : GameRow) (white black : User) : Except String (Agreement × List GameEvent × GameState) := do
+/-- The stored log, reconstructed and folded. That it is an admitted history
+    is `GameRow.invariant`, which LeanDB checked when the row was read. -/
+def replay (g : GameRow) : Except String (Agreement × List GameEvent × GameState) := do
   let events ← g.acts.mapM fun a => parseAct a.wire
-  let agr := agreementOf g white black
-  if !validLog agr events then throw "stored log is not an admitted history"
+  let agr := agreementOf g
   return (agr, events, fold agr events)
 
 def youAre (caller : LeanDb.Id User) (g : GameRow) : String :=
@@ -77,7 +75,10 @@ def register (body : Json) : DbM (Except Fail (Nat × Json)) := do
     | .error m => return .error (.bad m)
   if (← userByName name).isSome then return .error (.conflict s!"{name} is already registered")
   let token ← freshToken
-  let row ← insert User { name, token, autoClaim := auto }
+  let row ← try insert User { name, token, autoClaim := auto }
+    catch
+      | .duplicate .. => return .error (.conflict s!"{name} is already registered")
+      | e => throw e
   return .ok (201, Json.mkObj [
     ("ok", .bool true),
     ("id", toJson (idNum row.id)),
@@ -109,7 +110,7 @@ def answer (g : Stored GameRow) (events : List GameEvent) (s : GameState) (white
       match admit s s.position.side (.play m) now with
       | .ok ⟨.played, some ev⟩ =>
         let after := applyEvent s ev
-        let g ← update g { g.val with acts := g.val.acts ++ [⟨renderAct ev⟩] }
+        let g ← append g { g.val with acts := g.val.acts ++ [⟨renderAct ev⟩] }
         return (g, events ++ [ev], after)
       | _ => return (g, events, s)
 
@@ -158,15 +159,14 @@ def openGame (caller : Stored User) (body : Json) : DbM (Except Fail (Nat × Jso
         | none => return .error (.missing s!"no person named {opponent}")
         | some u => pure u
   let rated := other.val.name != Bot.botName && rated
-  let (white, black) :=
-    if color == .white then (caller.id, other.id) else (other.id, caller.id)
+  let (w, b) := if color == .white then (caller, other) else (other, caller)
   let start ← IO.monoMsNow
   let row ← insert GameRow {
-    white, black, rated, initialMs := clockMs, incrementMs := inc, startMs := start, acts := [] }
-  match ← loadPair row.val with
-  | .error e => return .error e
-  | .ok (w, b) =>
-      let s := initial (agreementOf row.val w.val b.val)
+    white := w.id, black := b.id, rated, initialMs := clockMs, incrementMs := inc,
+    startMs := start, whiteAutoClaim := w.val.autoClaim, blackAutoClaim := b.val.autoClaim,
+    acts := [] }
+  do
+      let s := initial (agreementOf row.val)
       return .ok (201, Json.mkObj [
         ("ok", .bool true),
         ("id", toJson (idNum row.id)),
@@ -199,9 +199,6 @@ def chooseSeat (caller : LeanDb.Id User) (g : GameRow) (turn : Color) (asked : O
       else if b then pure .black
       else throw (.forbidden "you are not sitting this game")
 
-def actWires (g : GameRow) : List String :=
-  g.acts.map (·.wire)
-
 def lookAt (caller : Stored User) (id : Int64) (asked : Option Nat) :
     DbM (Except Fail (Nat × Json)) := do
   let g ← match ← requireGame id with
@@ -215,7 +212,7 @@ def lookAt (caller : Stored User) (id : Int64) (asked : Option Nat) :
   match ← loadPair g.val with
   | .error e => return .error e
   | .ok (w, b) =>
-      match replay g.val w.val b.val with
+      match replay g.val with
       | .error m => return .error (.bad m)
       | .ok (agr, events, s) =>
           -- A current look may seat the machine's reply. A historical look
@@ -238,18 +235,15 @@ def lookAt (caller : Stored User) (id : Int64) (asked : Option Nat) :
 private def judge (caller : Stored User) (g : Stored GameRow) (req : Command)
     (asked : Option Color) (now : Nat) : DbM (Except Fail (Decision × GameState)) := do
   if !sits caller.id g.val then return .error (.forbidden "you are not sitting this game")
-  match ← loadPair g.val with
-  | .error e => return .error e
-  | .ok (w, b) =>
-      match replay g.val w.val b.val with
-      | .error m => return .error (.bad m)
-      | .ok (_, _, before) =>
-          let seat ← match chooseSeat caller.id g.val before.position.side asked with
-            | .ok c => pure c
-            | .error e => return .error e
-          match admit before seat req now with
-          | .error .notYourTurn => return .error (.forbidden "it is not your turn")
-          | .ok d => return .ok (d, before)
+  match replay g.val with
+  | .error m => return .error (.bad m)
+  | .ok (_, _, before) =>
+      let seat ← match chooseSeat caller.id g.val before.position.side asked with
+        | .ok c => pure c
+        | .error e => return .error e
+      match admit before seat req now with
+      | .error .notYourTurn => return .error (.forbidden "it is not your turn")
+      | .ok d => return .ok (d, before)
 
 private def renderAttempt (caller : Stored User) (g : Stored GameRow) (before : GameState)
     (d : Decision) (now : Nat) : DbM (Except Fail (Nat × Json)) := do
@@ -302,14 +296,14 @@ def attemptAt (caller : Stored User) (id : Int64) (body : Json) (clock : Option 
         match d.event with
         | none => renderAttempt caller g before d now
         | some ev =>
-          let g2 ← match ← gameById id with
-            | some g2 => pure g2
-            | none => return .error (.missing "no game with that id")
-          if actWires g.val != actWires g2.val then
-            go n
-          else
-            let g ← update g2 { g2.val with acts := g2.val.acts ++ [⟨renderAct ev⟩] }
-            renderAttempt caller g before d now
+          -- `append` refuses a log that moved on since `g` was read
+          let appended ← try some <$> append g { g.val with acts := g.val.acts ++ [⟨renderAct ev⟩] }
+            catch
+              | .stale .. => pure none
+              | e => throw e
+          match appended with
+          | some g => renderAttempt caller g before d now
+          | none => go n
   go 2
 
 def attempt (caller : Stored User) (id : Int64) (body : Json) :

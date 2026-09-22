@@ -103,6 +103,66 @@ def startOf (conn : Conn) (id : Int64) : IO Nat := do
   | some g => pure g.val.startMs
   | none => throw <| IO.userError "game is gone"
 
+/-- What the store guarantees: the agreement is in the game row, names and
+    tokens are unique in the database, a stale append is refused, and a log
+    that is not an admitted history is refused on read. -/
+def auditStorage (conn : Conn) (ada bel : Stored User) : IO Unit := do
+  -- The game row carries its agreement. Knights out and back twice: the
+  -- opening position a third time. Nobody auto-claims when the game opens,
+  -- so it goes on. Turning auto-claim on in the accounts afterwards would
+  -- end it at the repetition if the fold read the accounts; it does not.
+  let repId ← openBetween conn ada (Json.mkObj [
+    ("opponent", .str "bel"), ("rated", .bool false), ("initialMs", toJson (300000 : Nat))])
+  let repStart ← startOf conn repId
+  let shuffle := [("g1", "f3"), ("g8", "f6"), ("f3", "g1"), ("f6", "g8")]
+  let mut i := 0
+  for (a, b) in shuffle ++ shuffle do
+    let who := if i % 2 == 0 then ada else bel
+    let _ ← expect (← db conn (attemptAt who repId (playBody a b none none) (some (repStart + i)))) s!"shuffle {i}"
+    i := i + 1
+  let (_, agreedBefore) ← expect (← db conn (lookAt ada repId (some (repStart + 7)))) "agreement before"
+  check "repetition, not claimed" ((← field (← field agreedBefore "look") "ending") == Json.null)
+  conn.raw.exec "UPDATE \"user\" SET \"autoClaim\" = 1"
+  let (_, agreedAfter) ← expect (← db conn (lookAt ada repId (some (repStart + 7)))) "agreement after"
+  check "agreement fixed in the row" ((← field agreedBefore "look") == (← field agreedAfter "look"))
+  conn.raw.exec "UPDATE \"user\" SET \"autoClaim\" = 0"
+
+  -- One account per name, enforced by the database, not by a scan.
+  match ← DbM.run conn (insert User { name := "ada", token := "another" }) with
+  | .error (.duplicate ..) => pure ()
+  | .error e => throw <| IO.userError s!"duplicate name: {e}"
+  | .ok _ => throw <| IO.userError "duplicate name: stored"
+  match ← DbM.run conn (insert User { name := "zed", token := ada.val.token }) with
+  | .error (.duplicate ..) => pure ()
+  | .error e => throw <| IO.userError s!"duplicate token: {e}"
+  | .ok _ => throw <| IO.userError "duplicate token: stored"
+  match ← db conn (register (Json.mkObj [("name", .str "ada")])) with
+  | .error (.conflict _) => pure ()
+  | _ => throw <| IO.userError "register ada twice"
+
+  -- A move appended from a stale read of the log is refused, even though
+  -- the game's own columns did not change.
+  let raceId ← openBetween conn ada (Json.mkObj [
+    ("opponent", .str "bel"), ("rated", .bool false), ("initialMs", toJson (300000 : Nat))])
+  let raceStart ← startOf conn raceId
+  let some stale ← db conn (gameById (raceId)) | throw <| IO.userError "race game"
+  let _ ← expect (← db conn (attemptAt ada raceId (playBody "e2" "e4" none none) (some raceStart)))
+    "race e4"
+  let committed ← wires conn raceId
+  match ← DbM.run conn (append stale { stale.val with acts := committed.map (⟨·⟩) }) with
+  | .error (.stale ..) => pure ()
+  | .error e => throw <| IO.userError s!"stale append: {e}"
+  | .ok _ => throw <| IO.userError "stale append: stored"
+  check "race kept one move" ((← wires conn raceId) == committed)
+
+  -- A stored log that is not an admitted history is refused on read.
+  conn.raw.exec "UPDATE \"game_row_acts\" SET \"wire\" = replace(\"wire\", 'e2 e4', 'e2 e5') \
+WHERE \"position\" = 0"
+  match ← DbM.run conn (lookAt ada raceId none) with
+  | .error (.invariant ..) => pure ()
+  | .error e => throw <| IO.userError s!"corrupted log: {e}"
+  | .ok _ => throw <| IO.userError "corrupted log: folded"
+
 def main : IO UInt32 := do
   let path : System.FilePath := "/tmp/leanchess-audit.sqlite"
   if ← path.pathExists then IO.FS.removeFile path
@@ -303,6 +363,8 @@ def main : IO UInt32 := do
       "human asks for the machine's seat"
     let _ ← expect (← db conn (lookAt ada botId none)) "machine replies on look"
     check "machine move stored" ((← wires conn botId).length == 2)
+
+    auditStorage conn ada bel
 
     IO.FS.removeFile path
     IO.println "audit ok"

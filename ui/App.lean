@@ -1,9 +1,12 @@
 /-
   One seat in a browser. The board is the look the server folded.
   A click proposes an act. The server says whether it was admitted.
+  Which squares a piece may go to is `legalMoves` from `domain/Game.lean`,
+  the same function that admits the move on the server.
 -/
 
 import LeanReact
+import domain.Game
 
 namespace LeanChess.Ui
 
@@ -31,6 +34,10 @@ structure Look where
   check : String
   movedFrom : String
   movedTo : String
+  /-- The castling rights still held, as `KQkq` letters. -/
+  castling : String
+  /-- The en passant square, or empty. -/
+  ep : String
 
 structure Game where
   id : Nat
@@ -98,8 +105,58 @@ def clockLabel (ms : Nat) : String :=
   let total := ms / 1000
   toString (total / 60) ++ ":" ++ two (total % 60)
 
-def promoOf (kind toRank : String) : String :=
-  if kind == "pawn" && (toRank == "8" || toRank == "1") then "queen" else ""
+def squareOf (s : String) : Option Square :=
+  match s.toList with
+  | [f, r] =>
+      if f < 'a' || r < '1' then none
+      else do
+        let file ← File.ofNat? (f.toNat - 'a'.toNat)
+        let rank ← Rank.ofNat? (r.toNat - '1'.toNat)
+        pure ⟨file, rank⟩
+  | _ => none
+
+def nameOf (sq : Square) : String :=
+  files.getD sq.file.index "a" ++ toString (sq.rank.index + 1)
+
+def colorOf : String → Option Color
+  | "white" => some .white
+  | "black" => some .black
+  | _ => none
+
+def kindOf : String → Option PieceKind
+  | "king" => some .king | "queen" => some .queen | "rook" => some .rook
+  | "bishop" => some .bishop | "knight" => some .knight | "pawn" => some .pawn
+  | _ => none
+
+def kindName : PieceKind → String
+  | .king => "king" | .queen => "queen" | .rook => "rook"
+  | .bishop => "bishop" | .knight => "knight" | .pawn => "pawn"
+
+/-- The position the look shows, as the domain states it. -/
+def positionOf (look : Look) : Option Position := do
+  let board ← look.board.toList.mapM fun p => do
+    let sq ← squareOf p.square
+    let color ← colorOf p.color
+    let kind ← kindOf p.kind
+    pure (⟨sq, ⟨color, kind⟩⟩ : Placement)
+  let side ← colorOf look.turn
+  let has (c : Char) := look.castling.toList.contains c
+  pure {
+    board := sortBoard board
+    side
+    rights := ⟨has 'K', has 'Q', has 'k', has 'q'⟩
+    ep := squareOf look.ep }
+
+/-- The legal moves from `origin`, by the domain's `legalMoves`. -/
+def legalFrom (look : Look) (origin : String) : List Move :=
+  match positionOf look, squareOf origin with
+  | some p, some o => (legalMoves p).filter (·.src == o)
+  | _, _ => []
+
+def targetsFrom (look : Look) (origin : String) : List String :=
+  (legalFrom look origin).foldl (fun acc m =>
+    let t := nameOf m.to
+    if acc.contains t then acc else acc ++ [t]) []
 
 def titled : String → String
   | "white" => "White"
@@ -134,7 +191,8 @@ def pretty (look : Look) : String :=
   | "draw resignDead" => "Draw · resignation in a dead position"
   | other => other
 
-@[noinline] def squareEl (look : Look) (selected : String) (press : String → String → Action Unit) (f r : String) : Element :=
+@[noinline] def squareEl (look : Look) (selected : String) (targets : List String)
+    (press : String → String → Action Unit) (f r : String) : Element :=
   let sq := f ++ r
   let piece := pieceOn look.board sq
   let dark := (fileIdx f + rankIdx r) % 2 == 0
@@ -143,6 +201,7 @@ def pretty (look : Look) : String :=
   let cls := "sq"
     ++ (if dark then " dark" else " light")
     ++ (if selected == sq then " selected" else "")
+    ++ (if targets.contains sq then (if piece.isSome then " target take" else " target") else "")
     ++ (if look.movedFrom == sq || look.movedTo == sq then " moved" else "")
     ++ (if inCheck then " check" else "")
   let mark := match piece with | some p => glyph p.color p.kind | none => ""
@@ -157,10 +216,11 @@ def pretty (look : Look) : String :=
   ]
 
 @[noinline] def boardEl (look : Look) (selected : String) (press : String → String → Action Unit) : Element :=
+  let targets := if selected == "" then [] else targetsFrom look selected
   DOM.div { className := some "board", role := some "grid", ariaLabel := some "Board" }
     (rankOrder look.you |>.map fun r =>
       DOM.div { className := some "rank", role := some "row" }
-        (fileOrder look.you |>.map fun f => squareEl look selected press f r))
+        (fileOrder look.you |>.map fun f => squareEl look selected targets press f r))
 
 def clockEl (name time : String) (active : Bool) : Element :=
   DOM.div { className := some ("clock" ++ if active then " live" else "") } #[
@@ -182,6 +242,8 @@ def App : Component Props := component fun props => do
   let opponent ← useState "" "opponent"
   let joinId ← useState "" "join"
   let selected ← useState "" "selected"
+  let promoting ← useState "" "promoting"
+  let promotingTo ← useState "" "promotingTo"
   let seat ← useState "white" "seat"
   let tokenDep := match session.value with | some s => s.token | none => ""
   let idDep := match game.value with | some g => g.id | none => 0
@@ -199,7 +261,23 @@ def App : Component Props := component fun props => do
     | .ok next =>
         game.set (some next)
         selected.set ""
+        promoting.set ""
         notice.set (if next.look.admitted == "no" then "Refused. The log is unchanged." else "")
+  -- A drop the domain calls illegal never reaches the server. A legal
+  -- promotion asks for the piece. The server still admits or refuses.
+  let tryMove (g : Game) (s : Session) (origin sq : String) : Action Unit := do
+    let moves := (legalFrom g.look origin).filter (nameOf ·.to == sq)
+    if !mine g.look.you g.look.turn then
+      selected.set ""
+      notice.set "It is not your turn."
+    else if moves.isEmpty then
+      selected.set ""
+      notice.set "Not a legal move."
+    else if moves.any (·.promotion.isSome) then
+      promoting.set origin
+      promotingTo.set sq
+      notice.set ""
+    else report (← props.api.act s g.id "play" origin sq "")
   let press (f r : String) : Action Unit := do
     let sq := f ++ r
     let current ← game.read
@@ -209,15 +287,25 @@ def App : Component Props := component fun props => do
     | some g, some s =>
         if g.look.ending != "" then pure ()
         else
-          let fromKind := (pieceOn g.look.board origin |>.map (·.kind)).getD ""
+          promoting.set ""
           match pieceOn g.look.board sq with
           | some piece =>
-              if mine g.look.you piece.color then selected.set sq
-              else if origin != "" then report (← props.api.act s g.id "play" origin sq (promoOf fromKind r))
+              if mine g.look.you piece.color then
+                selected.set sq
+                notice.set ""
+              else if origin != "" then tryMove g s origin sq
               else pure ()
           | none =>
               if origin == "" then pure ()
-              else report (← props.api.act s g.id "play" origin sq (promoOf fromKind r))
+              else tryMove g s origin sq
+    | _, _ => pure ()
+  let promote (kind : PieceKind) : Action Unit := do
+    let origin ← promoting.read
+    let dest ← promotingTo.read
+    match (← game.read), (← session.read) with
+    | some g, some s =>
+        promoting.set ""
+        report (← props.api.act s g.id "play" origin dest (kindName kind))
     | _, _ => pure ()
   let send (kind : String) : Action Unit := do
     match (← game.read), (← session.read) with
@@ -276,6 +364,13 @@ def App : Component Props := component fun props => do
               clockEl topName (clockLabel topLeft) (going && g.look.turn == topSide),
               boardEl g.look selected.value press,
               clockEl bottomName (clockLabel bottomLeft) (going && g.look.turn == bottomSide),
+              if promoting.value == "" then text ""
+              else
+                DOM.div { className := some "promote", role := some "group", ariaLabel := some "Promote to" }
+                  (PieceKind.promotions.toArray.map fun k =>
+                    DOM.button { ariaLabel := some (kindName k), onPress := some (promote k) } #[
+                      text (glyph g.look.turn (kindName k))
+                    ]),
               DOM.p { className := some "status", role := some "status" } #[text (pretty g.look)]
             ]
       let rail := DOM.aside { className := some "rail" } #[

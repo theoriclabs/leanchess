@@ -5,7 +5,7 @@
 -/
 
 import LeanDb
-import domain.Game
+import api.Wire
 
 namespace LeanChess.Api
 
@@ -17,11 +17,18 @@ structure User where
   autoClaim : Bool := false
   deriving Repr, LeanDb.Entity
 
+/-- One account per name, and one per token: the database refuses a second. -/
+instance : LeanDb.Indexes User :=
+  ⟨#[{ unique := true, columns := #["name"] }, { unique := true, columns := #["token"] }]⟩
+
 /-- One act, in the wire form the boundary reconstructs into a `GameEvent`. -/
 structure Act where
   wire : String
   deriving Repr, LeanDb.Inline
 
+/-- A game: the agreement, fixed when it opened, and its log. Each seat's
+    choice to claim a threefold repetition is copied from the account when
+    the game opens, so nothing outside this row changes how its log folds. -/
 structure GameRow where
   white : Ref User
   black : Ref User
@@ -29,35 +36,41 @@ structure GameRow where
   initialMs : Nat
   incrementMs : Nat
   startMs : Nat
+  whiteAutoClaim : Bool := false
+  blackAutoClaim : Bool := false
   acts : List Act
-  deriving Repr, LeanDb.Entity
+  deriving Repr
+
+/-- The agreement, read from the game row alone. A person is the account's
+    id: a game against oneself is the same id in both seats. -/
+def agreementOf (g : GameRow) : LeanChess.Agreement where
+  white := ⟨toString g.white.toInt64, g.whiteAutoClaim⟩
+  black := ⟨toString g.black.toInt64, g.blackAutoClaim⟩
+  rated := g.rated
+  time := .realtime g.initialMs g.incrementMs
+  start := ⟨g.startMs⟩
+
+/-- A stored game is an admitted history: every act decodes, and the
+    sequence is one the admission would have written. LeanDB checks this on
+    every read and before every write, so a row that fails is never folded. -/
+@[leandb_invariant]
+def GameRow.invariant (g : GameRow) : Bool :=
+  match g.acts.mapM (parseAct ·.wire) with
+  | .ok events => validLog (agreementOf g) events
+  | .error _ => false
+
+deriving instance LeanDb.Entity for GameRow
 
 def schema : List TableSpec :=
   orderSpecs (Entity.specs User ++ Entity.specs GameRow)
 
-def users : DbM (Array (Stored User)) := fetchAll User
-
 def userByName (name : String) : DbM (Option (Stored User)) := do
-  let all ← users
-  return all.find? fun u => u.val.name == name
+  return (← select [User] (fun u => u.val.name == name))[0]?
 
 def userByToken (token : String) : DbM (Option (Stored User)) := do
-  let all ← users
-  return all.find? fun u => u.val.token == token
+  return (← select [User] (fun u => u.val.token == token))[0]?
 
 def gameById (id : Int64) : DbM (Option (Stored GameRow)) :=
   LeanDb.get (⟨id⟩ : LeanDb.Id GameRow)
-
-/-- The domain person is the stored name. The token stays in the row. -/
-def asPerson (u : User) : LeanChess.Person where
-  id := u.name
-  autoClaimThreefold := u.autoClaim
-
-def agreementOf (g : GameRow) (white black : User) : LeanChess.Agreement where
-  white := asPerson white
-  black := asPerson black
-  rated := g.rated
-  time := .realtime g.initialMs g.incrementMs
-  start := ⟨g.startMs⟩
 
 end LeanChess.Api

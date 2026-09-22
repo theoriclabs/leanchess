@@ -102,7 +102,9 @@ Assumed (adapter obligation, not discharged): a stored projection is written in 
 | A play by the seat not to move is never appended | Proved | `wrong_seat_never_appends`, `stale_read_cannot_authorize` |
 | A flag appends nothing | Proved | `flagged_appends_nothing` |
 | Register and open-game append nothing; a look appends nothing unless the machine is to move, and then only its own legal play | Proved | `inactive_route_appends_nothing`, `look_appends_nothing`, `look_appends_machine_play` |
-| A stored row that is not an admitted, ordered log is refused, not folded | Code | `Service.replay` checks `validLog` |
+| A stored row that is not an admitted, ordered log is refused on every read and write, not folded | Code, checked at runtime | `GameRow.invariant` (`validLog`), enforced by LeanDB; the audit corrupts a row and is refused |
+| A game folds from its own row: an account changed afterwards does not change it | Code, checked at runtime | `agreementOf` reads only `GameRow`; the audit turns auto-claim on after a threefold repetition |
+| One account per name and per token; a move appended from a stale read of the log is refused | Checked at runtime | UNIQUE indexes on `user`; `append` (LeanDB LDB-15); audit cases |
 | Server-stamped instants, forged `at` ignored, seat authority, the flag boundary, increments, historical looks fold the prefix, an ending stops the clock, a flag counts once a look reaches it | Checked at runtime | `leanchess-audit` |
 
-The web page (`web/`, `ui/`) reads the look and is not covered by any claim above.
+The web page (`web/`, `ui/`) reads the look. Which squares it offers a piece is the domain's `legalMoves`, compiled to JavaScript, and an illegal drop never reaches the server: checked in a browser by `web/legality.browser.test.mjs` (a pin, en passant, castling through an attacked square, promotion). The rest of the page is not covered by any claim above.

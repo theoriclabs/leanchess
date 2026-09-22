@@ -92,6 +92,12 @@ cp web/index.html web/style.css web/dist/
 
 The server listens on `127.0.0.1:8765` and stores games in `data/leanchess.sqlite`. Flags: `--host`, `--port` (or `PORT`), `--db`, `--web`.
 
+To check the page's legality in a browser, with the server started as `.lake/build/bin/leanchess-api --web web/dist --port 18767`:
+
+```sh
+PLAYWRIGHT=../leanreact/node_modules/playwright/index.mjs node web/legality.browser.test.mjs
+```
+
 To run the persistence regressions against a scratch database:
 
 ```sh
@@ -112,16 +118,15 @@ The server stamps every act with its own instant. A time sent by the client is i
 
 ## Deploying
 
-Production runs on Railway from `deploy/Dockerfile`. The build context is the parent of `leanchess`, `leandb`, and `leanreact`, with the Dockerfile and `.dockerignore` at its root. Stage that context with symlinks rather than uploading the whole parent directory:
+Production runs on Railway from `deploy/Dockerfile`:
 
 ```sh
-ctx=$(mktemp -d)
-cp deploy/Dockerfile deploy/.dockerignore "$ctx/"
-ln -s "$PWD/../leandb" "$PWD/../leanreact" "$PWD" "$ctx/"
-railway up "$ctx" --path-as-root --service leanchess --environment production
+deploy/deploy.sh
 ```
 
-The database lives on a Railway volume at `/data`. When a release changes what counts as an admitted log, stored games from the old rules are refused on read. `deploy/flush-production-db.sh` deletes the database after a typed confirmation and restarts the service. It must be run by a person.
+It refuses a checkout with uncommitted changes, stages a build context holding `leanchess`, `leandb`, and `leanreact` side by side with `deploy/railway.json` (the build settings) at its root, uploads it, records the three revisions in the deployment's message, and waits until the deployment succeeds and `/healthz` answers.
+
+The database lives on a Railway volume at `/data`. The server applies an additive schema migration when it starts (a new column with a default, an index, an invariant), after a backup beside the file, and refuses to start on a destructive one. When a release changes what counts as an admitted log, stored games from the old rules are refused on read; `deploy/flush-production-db.sh` deletes the database after a typed confirmation and restarts the service. It must be run by a person.
 
 ## Reading further
 

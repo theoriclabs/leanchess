@@ -43,8 +43,15 @@ function gameToLean(body, admitted) {
       look.check === true ? 'yes' : '',
       text(look.movedFrom),
       text(look.movedTo),
+      castlingOf(look.rights),
+      text(look.ep),
     ]),
   ]);
+}
+
+function castlingOf(rights) {
+  if (!rights) return '';
+  return (rights.wk ? 'K' : '') + (rights.wq ? 'Q' : '') + (rights.bk ? 'k' : '') + (rights.bq ? 'q' : '');
 }
 
 function admittedText(look) {
