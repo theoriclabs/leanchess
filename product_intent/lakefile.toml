@@ -1,0 +1,10 @@
+name = "product_intent"
+version = "0.1.0"
+defaultTargets = ["UserStories", "IntentExamples"]
+
+[[lean_lib]]
+name = "UserStories"
+
+[[lean_lib]]
+name = "IntentExamples"
+roots = ["Stories", "ChessStories", "ReservationStories", "StoryChecks"]
