@@ -4,7 +4,7 @@
 -/
 
 import Lean.Data.Json
-import domain.Game
+import domain.Command
 
 namespace LeanChess.Api
 
@@ -113,16 +113,8 @@ def parseAct (line : String) : Except String GameEvent := do
   | ["aborted", c, t] => return .aborted (← parseColor c) ⟨← parseNat t⟩
   | _ => throw s!"stored act does not reconstruct: {line}"
 
-/-- A client's act. The seat is whoever the token sits. The instant is not here. -/
-inductive Requested where
-  | play (move : Move)
-  | resign
-  | offer
-  | accept
-  | decline
-  | threefold (intended : Option Move)
-  | fifty (intended : Option Move)
-  | abort
+/- A client's act is a `Command` (`domain/Command.lean`). The seat is
+   whoever the token sits. The instant is not here. -/
 
 def field (j : Json) (k : String) : Except String Json :=
   j.getObjVal? k |>.mapError fun _ => s!"missing {k}"
@@ -167,7 +159,7 @@ def ignoreClientAt (j : Json) : Except String Unit := do
     | .ok _ => pure ()
     | .error _ => throw "at must be a whole number"
 
-def parseRequested (j : Json) : Except String (Requested × Option Color) := do
+def parseRequested (j : Json) : Except String (Command × Option Color) := do
   let kind ← strField j "kind"
   ignoreClientAt j
   let seat ← match ← optStr j "seat" with
@@ -195,22 +187,12 @@ def parseRequested (j : Json) : Except String (Requested × Option Color) := do
         let which ← strField j "claim"
         let intended ← move?
         match which with
-        | "threefold" => pure (.threefold intended)
-        | "fifty" => pure (.fifty intended)
+        | "threefold" => pure (.claimThreefold intended)
+        | "fifty" => pure (.claimFifty intended)
         | _ => throw "claim is threefold or fifty"
     | "abort" => pure .abort
     | _ => throw s!"kind is play, resign, offer, accept, decline, claim, or abort, got {kind}"
   return (req, seat)
-
-def eventOf (seat : Color) (instant : Nat) : Requested → GameEvent
-  | .play m => .moved m ⟨instant⟩
-  | .resign => .resigned seat ⟨instant⟩
-  | .offer => .drawOffered seat ⟨instant⟩
-  | .accept => .drawAccepted seat ⟨instant⟩
-  | .decline => .drawDeclined seat ⟨instant⟩
-  | .threefold m => .claimedThreefold seat m ⟨instant⟩
-  | .fifty m => .claimedFifty seat m ⟨instant⟩
-  | .abort => .aborted seat ⟨instant⟩
 
 def endingJson : Option Ending → Json
   | none => .null
@@ -247,7 +229,7 @@ def lookJson (s : GameState) (d : Instant) (you : String) (admitted : Option Boo
     ("whiteLeft", toJson (remaining s .white d)),
     ("blackLeft", toJson (remaining s .black d)),
     ("ply", toJson s.ply),
-    ("counts", .bool (countsForRating s)),
+    ("counts", .bool (countsForRating s d)),
     ("you", .str you),
     ("check", .bool ((resultAt s d).isNone && inCheck s.position)),
     ("movedFrom", if movedFrom == "" then .null else .str movedFrom),
@@ -257,8 +239,8 @@ def lookJson (s : GameState) (d : Instant) (you : String) (admitted : Option Boo
       ("wk", .bool rights.wk), ("wq", .bool rights.wq),
       ("bk", .bool rights.bk), ("bq", .bool rights.bq)]),
     ("ep", match s.position.ep with | none => .null | some sq => .str (squareName sq)),
-    ("halfmove", toJson s.position.halfmove),
-    ("fullmove", toJson s.position.fullmove)
+    ("halfmove", toJson s.halfmove),
+    ("fullmove", toJson (fullmove s))
   ]
   let base := match outcome with
     | none => base

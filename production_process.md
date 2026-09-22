@@ -8,7 +8,7 @@ The harness is this sequence plus the gates. A gate is implemented only once its
 
 Every stage holds these. A later stage may add a constructor, a derived function, or a theorem. It may not break them.
 
-1. **Derive the derivable.** A fact that follows from other facts is a function. Age from birth year. Enrollment-in-force from coverage dates. It is never a stored field and never an event.
+1. **Derive the derivable.** A fact that follows from other facts is a function. Age from birth year. Enrollment-in-force from coverage dates. It is never an event, and it is never a stored field that counts as a fact. A stored copy of a derived answer is a projection: it is right only while it is the function's answer at a named revision of the inputs, under a named version of the function, and it is used only with that evidence (`domain/Projection.lean`). Stale or unverified, it is rebuilt from the inputs.
 2. **Observe the unobservable.** A fact this world cannot compute is a dated observation from whoever can. Remaining deductible, and whether the plan is active today, are a 271. They stay on that observation.
 3. **Each role keeps its own type.** Patient owns coverages. BenefitPlan is the payer's product. EligibilityResponse is a 271. Three types.
 4. **The query universe is closed.** A query reads the prior world `W`, a prefix of the log `L`, and a clock `d` when the answer changes with time on the same log. A fact in neither `W` nor any prefix of `L` is unknown. The snapshot `S = apply(empty, L)` is a lossy view: what is current is asked of `S`; what happened is asked of `L`.
@@ -116,6 +116,7 @@ Gate: every requirement has one verdict. `admissible` names a witness. `gap` and
 | Cut | Stated at the top of `facts.md`. No separate `scope.md`. |
 | Vision | `vision.md`. Optative. It does not enter the query universe. Later requirements are cut from it. |
 | Vocabulary | `vocabulary.md`. |
-| Open stage | 3, Lean model. `domain/Game.lean` defines the game. `lake build` succeeds. The gate is not a checker yet. |
+| Open stage | 3, Lean model. `domain/Game.lean` defines the game; `domain/Command.lean` what a seat may propose and what is stored; `domain/Clock.lean` the clock; `domain/Valid.lean` what the fold keeps true; `domain/Mate.lean` what a dead position means and what the detector establishes; `domain/Projection.lean` what a stored copy of the fold is. `lake build` succeeds. The gate is not a checker yet. |
 | Flows | `userflows.md` is the prose. `example_cases/flows.lean` inhabits them: one agreement, one log, one look. `lake build ExampleCases`. |
-| Next artifact | Laws, when this gate is taken as passed. Five endings in the prose have no short log from the opening: stalemate, a dead position, seventy-five moves, a fifty-move claim that holds, and resignation in a dead position. |
+| Evidence | Each `domain/` file ends with what it proves and, under `Spec`, what it names and has not proved. A `Spec` entry is a proposition with no proof: not an axiom, used by nothing. `evidence.md` is the inventory. |
+| Next artifact | Laws, when this gate is taken as passed. Four endings in the prose have no short log from the opening: stalemate, a dead position, seventy-five moves, and resignation in a dead position. A fifty-move claim that holds is inhabited from a state built by hand. |

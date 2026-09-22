@@ -169,8 +169,8 @@ def lazyOpening : LazyPos where
   side := opening.side
   rights := opening.rights
   ep := opening.ep
-  halfmove := opening.halfmove
-  fullmove := opening.fullmove
+  halfmove := 0
+  fullmove := 1
 
 def allSquares : List Square :=
   File.all.flatMap fun file =>
