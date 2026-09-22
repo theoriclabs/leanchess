@@ -30,3 +30,7 @@ globs = ["ui.App"]
 [[lean_exe]]
 name = "leanchess-api"
 root = "api.Main"
+
+[[lean_exe]]
+name = "leanchess-audit"
+root = "api.Audit"

@@ -5,13 +5,22 @@
   POST /games                  Authorization: Bearer <token>
                                { "opponent", "color"?, "rated"?, "initialMs"?, "incrementMs"? }
                                { "bot": true, "color"? } seats the machine, unrated
-  GET  /games/<id>?at=<ms>     Authorization: Bearer <token>
+  GET  /games/<id>            Authorization: Bearer <token>
+                               current look; the observation is the server clock
+  GET  /games/<id>?at=<ms>     historical look at that instant, which must
+                               not be after the server clock
   POST /games/<id>/acts        Authorization: Bearer <token>
-                               { "kind", "at", "from"?, "to"?, "promotion"?, "claim"?, "seat"? }
+                               { "kind", "from"?, "to"?, "promotion"?, "claim"?, "seat"? }
 
   `kind` is play, resign, offer, accept, decline, claim, or abort.
-  The seat is the person the token names. A client does not send the
-  position or the clock; the response look is the fold.
+  The seat is the person the token names, and a play is admitted only
+  for the side to move. `at` on a command, if sent, is not the instant:
+  a whole number is ignored and anything else is rejected. The instant
+  is `IO.monoMsNow`, sampled inside this handler's lock after the log
+  is loaded and immediately before admission. Time spent waiting for
+  the lock is on the mover's clock.
+
+  The POST acts branch is `ClientRoute.acts` in `api/Admit.lean`.
 
   `--web` serves the page from that directory on GET. The API paths stay
   the fold. `--host` defaults to loopback.
@@ -137,11 +146,21 @@ def handle (lock : Std.Mutex Conn) (web : List WebFile) (req : Request Body.Stre
           match parseId id with
           | none => respond 400 (Json.mkObj [("ok", .bool false), ("error", .str "game id is a number")])
           | some id =>
-              let when? := (queryPairs req).find? (·.1 == "at") |>.bind fun p => p.2.toNat?
-              run do
-                match ← bearer (bearerHeader req) with
-                | .error e => return .error e
-                | .ok u => lookAt u id when?
+              let asked := (queryPairs req).find? (·.1 == "at")
+              match asked with
+              | some (_, s) =>
+                match s.toNat? with
+                | none => respond 400 (Json.mkObj [("ok", .bool false), ("error", .str "at must be a whole number")])
+                | some n =>
+                  run do
+                    match ← bearer (bearerHeader req) with
+                    | .error e => return .error e
+                    | .ok u => lookAt u id (some n)
+              | none =>
+                run do
+                  match ← bearer (bearerHeader req) with
+                  | .error e => return .error e
+                  | .ok u => lookAt u id none
       | "POST", ["games", id, "acts"] =>
           match parseId id with
           | none => respond 400 (Json.mkObj [("ok", .bool false), ("error", .str "game id is a number")])

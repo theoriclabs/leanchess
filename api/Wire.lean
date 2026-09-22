@@ -113,7 +113,7 @@ def parseAct (line : String) : Except String GameEvent := do
   | ["aborted", c, t] => return .aborted (← parseColor c) ⟨← parseNat t⟩
   | _ => throw s!"stored act does not reconstruct: {line}"
 
-/-- A client's act. The seat is filled in by whoever the token is. -/
+/-- A client's act. The seat is whoever the token sits. The instant is not here. -/
 inductive Requested where
   | play (move : Move)
   | resign
@@ -158,9 +158,18 @@ def optNat (j : Json) (k : String) (default : Nat) : Except String Nat := do
       | .ok n => pure n
       | .error _ => throw s!"{k} must be a whole number"
 
-def parseRequested (j : Json) : Except String (Requested × Nat × Option Color) := do
+/-- `at`, when present, must be a whole number. Its value is not the command time. -/
+def ignoreClientAt (j : Json) : Except String Unit := do
+  match j.getObjVal? "at" with
+  | .error _ | .ok .null => pure ()
+  | .ok v =>
+    match v.getNat? with
+    | .ok _ => pure ()
+    | .error _ => throw "at must be a whole number"
+
+def parseRequested (j : Json) : Except String (Requested × Option Color) := do
   let kind ← strField j "kind"
-  let instant ← natField j "at"
+  ignoreClientAt j
   let seat ← match ← optStr j "seat" with
     | none => pure none
     | some s => some <$> parseColor s
@@ -191,7 +200,7 @@ def parseRequested (j : Json) : Except String (Requested × Nat × Option Color)
         | _ => throw "claim is threefold or fifty"
     | "abort" => pure .abort
     | _ => throw s!"kind is play, resign, offer, accept, decline, claim, or abort, got {kind}"
-  return (req, instant, seat)
+  return (req, seat)
 
 def eventOf (seat : Color) (instant : Nat) : Requested → GameEvent
   | .play m => .moved m ⟨instant⟩
@@ -229,7 +238,7 @@ def lastSquares (events : List GameEvent) : String × String :=
     | _ => acc) ("", "")
 
 def lookJson (s : GameState) (d : Instant) (you : String) (admitted : Option Bool)
-    (movedFrom : String := "") (movedTo : String := "") : Json :=
+    (movedFrom : String := "") (movedTo : String := "") (outcome : Option String := none) : Json :=
   let rights := s.position.rights
   let base := [
     ("ending", endingJson (resultAt s d)),
@@ -251,6 +260,9 @@ def lookJson (s : GameState) (d : Instant) (you : String) (admitted : Option Boo
     ("halfmove", toJson s.position.halfmove),
     ("fullmove", toJson s.position.fullmove)
   ]
+  let base := match outcome with
+    | none => base
+    | some o => ("outcome", .str o) :: base
   Json.mkObj <| match admitted with
     | none => base
     | some b => ("admitted", .bool b) :: base

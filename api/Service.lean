@@ -1,14 +1,14 @@
 /-
   Register a person. Open a game against another. Attempt an act.
-  The attempt is admitted only when the fold changes, and only then is
-  it appended to the log.
+  A play is appended only when `admit` says it landed for the side to
+  move. A clock flag is a look at the server's instant, not a stored move.
 -/
 
 import LeanDb
+import api.Admit
 import api.Bot
 import api.Store
 import api.Wire
-import domain.Semantics
 
 namespace LeanChess.Api
 
@@ -92,21 +92,21 @@ def machineToMove (s : GameState) (white black : User) : Bool :=
     | .white => white.name == Bot.botName
     | .black => black.name == Bot.botName
 
-/-- One act, at the server's clock, when the side to move is the machine. -/
-def answer (g : Stored GameRow) (events : List GameEvent) (s : GameState) (white black : User) :
-    DbM (Stored GameRow × List GameEvent × GameState) := do
+/-- One act, at `now`, when the side to move is the machine.
+    The same `admit` as a person's play: a flag does not store the move. -/
+def answer (g : Stored GameRow) (events : List GameEvent) (s : GameState) (white black : User)
+    (now : Nat) : DbM (Stored GameRow × List GameEvent × GameState) := do
   if !machineToMove s white black then return (g, events, s)
   else
     match Bot.choose s.position with
     | none => return (g, events, s)
     | some m =>
-        let now ← IO.monoMsNow
-        let ev : GameEvent := .moved m ⟨now⟩
+      match admit s s.position.side (.play m) now with
+      | .ok ⟨.played, some ev⟩ =>
         let after := applyEvent s ev
-        if !changed s after then return (g, events, s)
-        else
-          let g ← update g { g.val with acts := g.val.acts ++ [⟨renderAct ev⟩] }
-          return (g, events ++ [ev], after)
+        let g ← update g { g.val with acts := g.val.acts ++ [⟨renderAct ev⟩] }
+        return (g, events ++ [ev], after)
+      | _ => return (g, events, s)
 
 def bearer (header : Option String) : DbM (Except Fail (Stored User)) := do
   match header with
@@ -194,45 +194,41 @@ def chooseSeat (caller : LeanDb.Id User) (g : GameRow) (turn : Color) (asked : O
       else if b then pure .black
       else throw (.forbidden "you are not sitting this game")
 
-def lookAt (caller : Stored User) (id : Int64) (when? : Option Nat) :
+def actWires (g : GameRow) : List String :=
+  g.acts.map (·.wire)
+
+def lookAt (caller : Stored User) (id : Int64) (asked : Option Nat) :
     DbM (Except Fail (Nat × Json)) := do
   let g ← match ← requireGame id with
     | .ok g => pure g
     | .error e => return .error e
   if !sits caller.id g.val then return .error (.forbidden "you are not sitting this game")
+  let now ← IO.monoMsNow
+  let (observed, historical) ← match observe now asked with
+    | .ok v => pure v
+    | .error m => return .error (.bad m)
   match ← loadPair g.val with
   | .error e => return .error e
   | .ok (w, b) =>
       match replay g.val w.val b.val with
       | .error m => return .error (.bad m)
       | .ok (_, events, s) =>
-          let (g, events, s) ← answer g events s w.val b.val
-          let d := match when? with
-            | some n => n
-            | none => events.foldl (fun acc e => max acc (match e with
-                | .moved _ t | .resigned _ t | .drawOffered _ t | .drawAccepted _ t
-                | .drawDeclined _ t | .claimedThreefold _ _ t | .claimedFifty _ _ t
-                | .aborted _ t => t.ms)) g.val.startMs
+          let (g, events, s) ← answer g events s w.val b.val now
           let (movedFrom, movedTo) := lastSquares events
-          let now ← IO.monoMsNow
           return .ok (200, Json.mkObj [
             ("ok", .bool true),
             ("id", toJson (idNum g.id)),
             ("now", toJson now),
+            ("observedAt", toJson observed),
+            ("historical", .bool historical),
             ("white", .str w.val.name),
             ("black", .str b.val.name),
             ("log", .arr (g.val.acts.map (fun a => Json.str a.wire)).toArray),
-            ("look", lookJson s ⟨d⟩ (youAre caller.id g.val) none movedFrom movedTo)])
+            ("look", lookJson s ⟨observed⟩ (youAre caller.id g.val) none movedFrom movedTo)])
 
-def attempt (caller : Stored User) (id : Int64) (body : Json) :
-    DbM (Except Fail (Nat × Json)) := do
-  let g ← match ← requireGame id with
-    | .ok g => pure g
-    | .error e => return .error e
+private def judge (caller : Stored User) (g : Stored GameRow) (req : Requested)
+    (asked : Option Color) (now : Nat) : DbM (Except Fail (Decision × GameState)) := do
   if !sits caller.id g.val then return .error (.forbidden "you are not sitting this game")
-  let (req, instant, asked) ← match parseRequested body with
-    | .ok v => pure v
-    | .error m => return .error (.bad m)
   match ← loadPair g.val with
   | .error e => return .error e
   | .ok (w, b) =>
@@ -242,24 +238,99 @@ def attempt (caller : Stored User) (id : Int64) (body : Json) :
           let seat ← match chooseSeat caller.id g.val before.position.side asked with
             | .ok c => pure c
             | .error e => return .error e
-          let ev := eventOf seat instant req
-          let after := applyEvent before ev
-          let admitted := changed before after
-          let g ← if !admitted then pure g else
-              update g { g.val with acts := g.val.acts ++ [⟨renderAct ev⟩] }
-          let shown := if admitted then after else before
-          let played := g.val.acts.filterMap fun a =>
-            match parseAct a.wire with | .ok e => some e | .error _ => none
-          let (movedFrom, movedTo) := lastSquares played
-          let d := ⟨instant⟩
-          let now ← IO.monoMsNow
-          return .ok (200, Json.mkObj [
-            ("ok", .bool true),
-            ("id", toJson (idNum g.id)),
-            ("now", toJson now),
-            ("white", .str w.val.name),
-            ("black", .str b.val.name),
-            ("log", .arr (g.val.acts.map (fun a => Json.str a.wire)).toArray),
-            ("look", lookJson shown d (youAre caller.id g.val) (some admitted) movedFrom movedTo)])
+          match admit before seat req now with
+          | .error .notYourTurn => return .error (.forbidden "it is not your turn")
+          | .ok d => return .ok (d, before)
+
+private def renderAttempt (caller : Stored User) (g : Stored GameRow) (before : GameState)
+    (d : Decision) (now : Nat) : DbM (Except Fail (Nat × Json)) := do
+  match ← loadPair g.val with
+  | .error e => return .error e
+  | .ok (w, b) =>
+      let shown := match d.event with
+        | some ev => applyEvent before ev
+        | none => before
+      let played := g.val.acts.filterMap fun a =>
+        match parseAct a.wire with | .ok e => some e | .error _ => none
+      let (movedFrom, movedTo) := lastSquares played
+      let admitted := d.outcome == .played
+      return .ok (200, Json.mkObj [
+        ("ok", .bool true),
+        ("id", toJson (idNum g.id)),
+        ("now", toJson now),
+        ("observedAt", toJson now),
+        ("historical", .bool false),
+        ("outcome", .str d.outcome.wire),
+        ("white", .str w.val.name),
+        ("black", .str b.val.name),
+        ("log", .arr (g.val.acts.map (fun a => Json.str a.wire)).toArray),
+        ("look", lookJson shown ⟨now⟩ (youAre caller.id g.val) (some admitted)
+          movedFrom movedTo (some d.outcome.wire))])
+
+/-- `clock` is the server instant. `none` samples it after the log is loaded. -/
+def attemptAt (caller : Stored User) (id : Int64) (body : Json) (clock : Option Nat) :
+    DbM (Except Fail (Nat × Json)) := do
+  let g ← match ← requireGame id with
+    | .ok g => pure g
+    | .error e => return .error e
+  if !sits caller.id g.val then return .error (.forbidden "you are not sitting this game")
+  let (req, asked) ← match parseRequested body with
+    | .ok v => pure v
+    | .error m => return .error (.bad m)
+  let rec go (fuel : Nat) : DbM (Except Fail (Nat × Json)) := do
+    match fuel with
+    | 0 => return .error (.conflict "the game changed; try again")
+    | n + 1 =>
+      let g ← match ← requireGame id with
+        | .ok g => pure g
+        | .error e => return .error e
+      let now ← match clock with
+        | some t => pure t
+        | none => IO.monoMsNow
+      match ← judge caller g req asked now with
+      | .error e => return .error e
+      | .ok (d, before) =>
+        match d.event with
+        | none => renderAttempt caller g before d now
+        | some ev =>
+          let g2 ← match ← gameById id with
+            | some g2 => pure g2
+            | none => return .error (.missing "no game with that id")
+          if actWires g.val != actWires g2.val then
+            go n
+          else
+            let g ← update g2 { g2.val with acts := g2.val.acts ++ [⟨renderAct ev⟩] }
+            renderAttempt caller g before d now
+  go 2
+
+def attempt (caller : Stored User) (id : Int64) (body : Json) :
+    DbM (Except Fail (Nat × Json)) :=
+  attemptAt caller id body none
+
+private def seatRow (w b : Nat) : GameRow := {
+  white := ⟨Int64.ofNat w⟩, black := ⟨Int64.ofNat b⟩, rated := false,
+  initialMs := 300000, incrementMs := 0, startMs := 0, acts := [] }
+
+#guard match chooseSeat (⟨Int64.ofNat 2⟩ : LeanDb.Id User) (seatRow 1 2) .white none with
+  | .ok seat => seat == .black
+  | .error _ => false
+
+#guard match chooseSeat (⟨Int64.ofNat 2⟩ : LeanDb.Id User) (seatRow 1 2) .white (some .white) with
+  | .error (.forbidden _) => true
+  | _ => false
+
+#guard match chooseSeat (⟨Int64.ofNat 3⟩ : LeanDb.Id User) (seatRow 1 2) .white none with
+  | .error (.forbidden _) => true
+  | _ => false
+
+#guard match chooseSeat (⟨Int64.ofNat 1⟩ : LeanDb.Id User) (seatRow 1 1) .white none with
+  | .ok seat => seat == .white
+  | .error _ => false
+#guard match chooseSeat (⟨Int64.ofNat 1⟩ : LeanDb.Id User) (seatRow 1 1) .white (some .black) with
+  | .ok seat => seat == .black
+  | .error _ => false
+#guard match chooseSeat (⟨Int64.ofNat 1⟩ : LeanDb.Id User) (seatRow 1 1) .black none with
+  | .ok seat => seat == .black
+  | .error _ => false
 
 end LeanChess.Api
