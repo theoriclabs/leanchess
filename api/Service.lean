@@ -9,6 +9,7 @@ import api.Admit
 import api.Bot
 import api.Store
 import api.Wire
+import domain.Clock
 
 namespace LeanChess.Api
 
@@ -44,9 +45,13 @@ def freshToken : IO String := do
     n := n * 256 + b.toNat
   return toString n
 
+/-- The stored log, reconstructed and checked: every act decodes, and the
+    sequence is one the admission would have written (`validLog`). A row
+    that is not is refused, not folded. -/
 def replay (g : GameRow) (white black : User) : Except String (Agreement × List GameEvent × GameState) := do
   let events ← g.acts.mapM fun a => parseAct a.wire
   let agr := agreementOf g white black
+  if !validLog agr events then throw "stored log is not an admitted history"
   return (agr, events, fold agr events)
 
 def youAre (caller : LeanDb.Id User) (g : GameRow) : String :=
@@ -212,8 +217,12 @@ def lookAt (caller : Stored User) (id : Int64) (asked : Option Nat) :
   | .ok (w, b) =>
       match replay g.val w.val b.val with
       | .error m => return .error (.bad m)
-      | .ok (_, events, s) =>
-          let (g, events, s) ← answer g events s w.val b.val now
+      | .ok (agr, events, s) =>
+          -- A current look may seat the machine's reply. A historical look
+          -- is the fold of the prefix up to `at`, and admits nothing.
+          let (g, events, s) ←
+            if historical then pure (g, prefixAt events ⟨observed⟩, lookback agr events ⟨observed⟩)
+            else answer g events s w.val b.val now
           let (movedFrom, movedTo) := lastSquares events
           return .ok (200, Json.mkObj [
             ("ok", .bool true),
@@ -223,10 +232,10 @@ def lookAt (caller : Stored User) (id : Int64) (asked : Option Nat) :
             ("historical", .bool historical),
             ("white", .str w.val.name),
             ("black", .str b.val.name),
-            ("log", .arr (g.val.acts.map (fun a => Json.str a.wire)).toArray),
+            ("log", .arr (events.map (fun e => Json.str (renderAct e))).toArray),
             ("look", lookJson s ⟨observed⟩ (youAre caller.id g.val) none movedFrom movedTo)])
 
-private def judge (caller : Stored User) (g : Stored GameRow) (req : Requested)
+private def judge (caller : Stored User) (g : Stored GameRow) (req : Command)
     (asked : Option Color) (now : Nat) : DbM (Except Fail (Decision × GameState)) := do
   if !sits caller.id g.val then return .error (.forbidden "you are not sitting this game")
   match ← loadPair g.val with

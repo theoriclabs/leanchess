@@ -234,6 +234,61 @@ def main : IO UInt32 := do
     let (_, past) ← expect (← db conn (lookAt bel liveId (some liveStart))) "historical look"
     check "historical" ((← jsonBool past "historical") == true)
     check "historical instant" ((← jsonNat past "observedAt") == liveStart)
+    -- A historical look is the fold of the prefix. The move may share the
+    -- start's millisecond, so ask one millisecond before the start: no move yet.
+    let (_, before) ← expect (← db conn (lookAt bel liveId (some (liveStart - 1)))) "look before start"
+    let beforeLook ← field before "look"
+    check "historical prefix" ((← jsonNat beforeLook "ply") == 0)
+    check "historical log" ((← field before "log") == Json.arr #[])
+    let (_, atNow) ← expect (← db conn (lookAt bel liveId none)) "look now"
+    check "current prefix" ((← jsonNat (← field atNow "look") "ply") == 1)
+
+    -- An ending stops the clock at its own instant. Both played; White
+    -- resigns 5 s into their turn; a look much later reads the same figure.
+    let endId ← openBetween conn ada (Json.mkObj [
+      ("opponent", .str "bel"), ("rated", .bool true),
+      ("initialMs", toJson (300000 : Nat)), ("incrementMs", toJson (0 : Nat))])
+    let endStart ← startOf conn endId
+    let _ ← expect (← db conn (attemptAt ada endId (playBody "e2" "e4" none none) (some (endStart + 1000))))
+      "ending e4"
+    let _ ← expect (← db conn (attemptAt bel endId (playBody "e7" "e5" none none) (some (endStart + 2000))))
+      "ending e5"
+    let (_, resigned) ← expect
+      (← db conn (attemptAt ada endId (Json.mkObj [("kind", .str "resign")]) (some (endStart + 7000))))
+      "resign"
+    check "resign outcome" ((← jsonStr resigned "outcome") == "played")
+    let resignLook ← field resigned "look"
+    check "resign froze white" ((← jsonNat resignLook "whiteLeft") == 294000)
+    check "resign counts" ((← jsonBool resignLook "counts") == true)
+    -- A current look: the server clock is earlier than the resignation's
+    -- stamp here, and the frozen figures do not depend on the instant.
+    let (_, later) ← expect (← db conn (lookAt bel endId none)) "look after resign"
+    let laterLook ← field later "look"
+    check "still frozen" ((← jsonNat laterLook "whiteLeft") == 294000)
+    check "still counts" ((← jsonBool laterLook "counts") == true)
+    match ← field laterLook "ending" with
+    | .str s => check "resign ending" (s == "resign black")
+    | _ => throw <| IO.userError "resign ending missing"
+
+    -- A flag counts once a look reaches it, with nothing appended.
+    let flagCountId ← openBetween conn ada (Json.mkObj [
+      ("opponent", .str "bel"), ("rated", .bool true),
+      ("initialMs", toJson (1000 : Nat)), ("incrementMs", toJson (0 : Nat))])
+    let fcStart ← startOf conn flagCountId
+    let _ ← expect (← db conn (attemptAt ada flagCountId (playBody "e2" "e4" none none) (some fcStart)))
+      "flag count e4"
+    let _ ← expect (← db conn (attemptAt bel flagCountId (playBody "e7" "e5" none none) (some (fcStart + 1))))
+      "flag count e5"
+    let (_, open_) ← expect (← db conn (lookAt bel flagCountId none)) "before flag"
+    check "open does not count" ((← jsonBool (← field open_ "look") "counts") == false)
+    -- A look cannot be asked at a future instant, so wait for the clock.
+    IO.sleep 1300
+    let (_, flaggedLook) ← expect (← db conn (lookAt bel flagCountId none)) "at flag"
+    match ← field (← field flaggedLook "look") "ending" with
+    | .str s => check "flag ending" (s == "flag black")
+    | _ => throw <| IO.userError "flag ending missing"
+    check "flag counts" ((← jsonBool (← field flaggedLook "look") "counts") == true)
+    check "flag appended nothing" ((← wires conn flagCountId).length == 2)
 
     let botId ← openBetween conn ada (Json.mkObj [
       ("bot", .bool true), ("color", .str "white"), ("rated", .bool false),

@@ -302,15 +302,11 @@ def place (p : Position) (m : Move) : Position := Id.run do
     board := board.set m.src none |>.set m.to (some arrived)
     if pc.kind == .pawn && df == 0 && dr.natAbs == 2 then
       ep := m.src.offset 0 (pawnDir pc.color)
-  let half := if pc.kind == .pawn || capture then 0 else p.halfmove + 1
-  let full := if p.side == .black then p.fullmove + 1 else p.fullmove
   return {
     board
     side := p.side.other
     rights
     ep
-    halfmove := half
-    fullmove := full
   }
 
 def evalAtom (e : Env) : Atom → Bool
@@ -421,23 +417,28 @@ set_option genSizeOfSpec false in
 structure Node where
   pos : Position
   seen : List PosKey
+  /-- Plies since the last pawn move or capture. The line's, not the position's. -/
+  halfmove : Nat
   next : Thunk (Option Node)
 
 instance : Inhabited Node where
-  default := { pos := opening, seen := [], next := Thunk.pure none }
+  default := { pos := opening, seen := [], halfmove := 0, next := Thunk.pure none }
 
-partial def line (p : Position) (seen : List PosKey) : List Move → Node
-  | [] => { pos := p, seen := seen, next := Thunk.pure none }
+partial def line (p : Position) (seen : List PosKey) (half : Nat) : List Move → Node
+  | [] => { pos := p, seen := seen, halfmove := half, next := Thunk.pure none }
   | m :: ms =>
     { pos := p
       seen := seen
+      halfmove := half
       next := Thunk.mk fun () =>
         match step p m with
         | none => none
-        | some p' => some (line p' (key p' :: seen) ms) }
+        | some p' =>
+          let half' := if resetsHalfmove p m then 0 else half + 1
+          some (line p' (key p' :: seen) half' ms) }
 
 def start (moves : List Move) : Node :=
-  line opening [key opening] moves
+  line opening [key opening] 0 moves
 
 partial def nodeAt (n : Nat) (node : Node) : Node :=
   match n with
@@ -452,17 +453,17 @@ def times (node : Node) : Nat :=
   | [] => 0
   | k :: _ => (node.seen.filter (· == k)).length
 
-def evalEnd (p : Position) (reps : Nat) : EndCond → Bool
+def evalEnd (p : Position) (reps half : Nat) : EndCond → Bool
   | .holds .inCheck => sideInCheck p p.side
   | .holds .noLegalMove => (legal p).toList.isEmpty
-  | .holds (.cannotMate c) => !canMate p c
+  | .holds (.cannotMate c) => !Material.mayMate p c
   | .holds (.repetitionsAtLeast n) => reps ≥ n
-  | .holds (.halfmoveAtLeast n) => p.halfmove ≥ n
-  | .and a b => if evalEnd p reps a then evalEnd p reps b else false
-  | .not c => !evalEnd p reps c
+  | .holds (.halfmoveAtLeast n) => half ≥ n
+  | .and a b => if evalEnd p reps half a then evalEnd p reps half b else false
+  | .not c => !evalEnd p reps half c
 
 def judge (node : Node) : Option Verdict :=
-  (endLaws.find? fun l => evalEnd node.pos (times node) l.when).map (·.name)
+  (endLaws.find? fun l => evalEnd node.pos (times node) node.halfmove l.when).map (·.name)
 
 /- ====================================================================
    Checks. Castle is found by matching the law, not by playing a game.
@@ -509,10 +510,8 @@ def twoKings : Position where
   side := .white
   rights := Rights.none
   ep := none
-  halfmove := 0
-  fullmove := 1
 
-#guard evalEnd twoKings 1 (.holds (.cannotMate .white))
-#guard evalEnd twoKings 1 (.holds (.cannotMate .black))
+#guard evalEnd twoKings 1 0 (.holds (.cannotMate .white))
+#guard evalEnd twoKings 1 0 (.holds (.cannotMate .black))
 
 end LeanChess.Deep

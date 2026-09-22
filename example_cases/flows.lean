@@ -5,11 +5,12 @@
   fold of that log at an instant. It is not an event, and it does not take
   a seat: both seats are asking the same question.
 
-  Five endings in the prose have no short log from the opening, so they are
-  not here: stalemate, a dead position, seventy-five moves, a fifty-move
-  claim that holds, and a resignation in a dead position. A flag where the
-  other seat cannot force a win is the same gap. From the opening, a flag
-  is a loss for the seat whose time ran out.
+  Four endings in the prose have no short log from the opening, so they are
+  not here: stalemate, a dead position, seventy-five moves, and a
+  resignation in a dead position. A flag where the other seat cannot force
+  a win is the same gap. From the opening, a flag is a loss for the seat
+  whose time ran out. A fifty-move claim that holds is inhabited from a
+  state built by hand, and says so.
 
   The proofs are `native_decide`. `decide` does not reduce `fold`: one play
   goes through `applyMove`, and the kernel does not finish that term.
@@ -52,7 +53,7 @@ structure Look where
   blackLeft : Nat
   ply : Nat
   counts : Bool
-  deriving Repr, BEq, DecidableEq
+  deriving Repr, DecidableEq
 
 def look (a : Agreement) (log : List GameEvent) (d : Instant) : Look :=
   let s := fold a log
@@ -62,7 +63,7 @@ def look (a : Agreement) (log : List GameEvent) (d : Instant) : Look :=
     whiteLeft := remaining s .white d
     blackLeft := remaining s .black d
     ply := s.ply
-    counts := countsForRating s }
+    counts := countsForRating s d }
 
 def played (step : Nat) (moves : List Move) : List GameEvent :=
   let rec go (i : Nat) : List Move → List GameEvent
@@ -96,7 +97,7 @@ theorem turn :
 
 /-- Refused. An impossible play leaves the fold as it was. -/
 theorem refused :
-    (fold blitz [.moved (mv .e .r2 .e .r5) ⟨100⟩]).position = opening ∧
+    fold blitz [.moved (mv .e .r2 .e .r5) ⟨100⟩] = fold blitz [] ∧
     look blitz [.moved (mv .e .r2 .e .r5) ⟨100⟩] ⟨100⟩ =
       look blitz [] ⟨100⟩ := by
   native_decide
@@ -106,10 +107,9 @@ theorem refused :
     game admits it from either seat once both have played. -/
 theorem outOfTurn :
     let begun := played 1000 [e4]
-    look blitz (begun ++ [.moved (mv .d .r2 .d .r4) ⟨2000⟩]) ⟨2000⟩ = look blitz begun ⟨2000⟩ ∧
-    look blitz (begun ++ [.drawOffered .white ⟨2000⟩]) ⟨2000⟩ = look blitz begun ⟨2000⟩ ∧
-    look blitz (begun ++ [.claimedThreefold .white none ⟨2000⟩]) ⟨2000⟩ =
-      look blitz begun ⟨2000⟩ := by
+    fold blitz (begun ++ [.moved (mv .d .r2 .d .r4) ⟨2000⟩]) = fold blitz begun ∧
+    fold blitz (begun ++ [.drawOffered .white ⟨2000⟩]) = fold blitz begun ∧
+    fold blitz (begun ++ [.claimedThreefold .white none ⟨2000⟩]) = fold blitz begun := by
   native_decide
 
 /-- The play ends the game. Scholar's mate. No resign, no claim, no abort
@@ -149,14 +149,17 @@ theorem accept :
 
 /-- Accepting before both have played does not end it, and the offer stays. -/
 theorem acceptTooSoon :
-    look blitz [.drawOffered .white ⟨0⟩, .drawAccepted .black ⟨10⟩] ⟨10⟩ =
-      look blitz [.drawOffered .white ⟨0⟩] ⟨10⟩ := by
+    fold blitz [.drawOffered .white ⟨0⟩, .drawAccepted .black ⟨10⟩] =
+      fold blitz [.drawOffered .white ⟨0⟩] := by
   native_decide
 
+/-- Declining clears the offer. It does not clear what the offer meant for
+    White's next play: the fold still remembers who offered this turn. -/
 theorem decline :
     let log := bothPlayed ++ [.drawOffered .white ⟨3000⟩, .drawDeclined .black ⟨4000⟩]
     let s := look blitz log ⟨4000⟩
-    s.offer = none ∧ s.ending = none ∧ s.ply = 2 := by
+    s.offer = none ∧ s.ending = none ∧ s.ply = 2 ∧
+      (fold blitz log).claim = some .white := by
   native_decide
 
 /-- White offers, then plays. The offer is still standing afterwards. -/
@@ -166,10 +169,12 @@ theorem offerThenPlay :
     s.offer = some .white ∧ s.turn = .black ∧ s.ply = 1 ∧ s.ending = none := by
   native_decide
 
-/-- Black's reply play clears the offer White left standing. -/
+/-- Black's reply play clears the offer White left standing, and the turn
+    White offered in is over. -/
 theorem clearedByPlay :
     let log := [.drawOffered .white ⟨0⟩, .moved e4 ⟨1000⟩, .moved e5 ⟨2000⟩]
-    (look blitz log ⟨2000⟩).offer = none ∧ (look blitz log ⟨2000⟩).ply = 2 := by
+    (look blitz log ⟨2000⟩).offer = none ∧ (look blitz log ⟨2000⟩).ply = 2 ∧
+      (fold blitz log).claim = none := by
   native_decide
 
 /-- Black offers, then plays the knight home. That is the third occurrence
@@ -178,6 +183,20 @@ theorem offerThenThird :
     let front := played 100 (shuttle ++ shuttle.take 3)
     let log := front ++ [.drawOffered .black ⟨700⟩, .moved (mv .f .r6 .g .r8) ⟨800⟩]
     (look blitz log ⟨800⟩).ending = some (.draw .threefold) := by
+  native_decide
+
+/-- The same, with White declining in between. The decline clears the
+    offer and not the claim it carried: the play that makes the third
+    occurrence still ends the game. This is the Lichess reading in
+    `facts.md`, and the reading the fold used to miss. -/
+theorem declinedThenThird :
+    let front := played 100 (shuttle ++ shuttle.take 3)
+    let log := front ++ [.drawOffered .black ⟨700⟩, .drawDeclined .white ⟨750⟩,
+      .moved (mv .f .r6 .g .r8) ⟨800⟩]
+    repetitions (fold blitz log) = 3 ∧
+      (look blitz log ⟨800⟩).ending = some (.draw .threefold) ∧
+      (look blitz (front ++ [.drawOffered .black ⟨700⟩, .drawDeclined .white ⟨750⟩]) ⟨750⟩).offer
+        = none := by
   native_decide
 
 /- ====================================================================
@@ -191,18 +210,59 @@ theorem claim :
     (look blitz log ⟨900⟩).ending = some (.draw .threefold) := by
   native_decide
 
-/-- The named play does not make a threefold, so it is just the play.
-    The clock matches an ordinary play: nothing extra for the failed claim. -/
+/-- A claim naming a play is that play, with a draw offer standing from the
+    claimant (FIDE 9.1.2.3). When the play does not make a threefold, the
+    fold is exactly the fold of an offer followed by the play: the same
+    clock, nothing extra for the failed claim. -/
 theorem claimMisses :
-    look quick [.claimedThreefold .white (some e4) ⟨1000⟩] ⟨1000⟩ =
-      look quick [.moved e4 ⟨1000⟩] ⟨1000⟩ := by
+    fold quick [.claimedThreefold .white (some e4) ⟨1000⟩] =
+      fold quick [.drawOffered .white ⟨1000⟩, .moved e4 ⟨1000⟩] ∧
+    fold quick [.claimedFifty .white (some e4) ⟨1000⟩] =
+      fold quick [.drawOffered .white ⟨1000⟩, .moved e4 ⟨1000⟩] := by
   native_decide
 
-/-- A claim with no play, which does not hold, changes nothing.
-    The same for a fifty-move claim that does not hold. -/
-theorem claimEmpty :
-    look blitz [.claimedThreefold .white none ⟨0⟩] ⟨0⟩ = look blitz [] ⟨0⟩ ∧
-    look blitz [.claimedFifty .white none ⟨0⟩] ⟨0⟩ = look blitz [] ⟨0⟩ := by
+/-- A claim with no play, which does not hold, is a draw offer. The same for
+    a fifty-move claim that does not hold. -/
+theorem claimStands :
+    fold blitz [.claimedThreefold .white none ⟨0⟩] = fold blitz [.drawOffered .white ⟨0⟩] ∧
+    fold blitz [.claimedFifty .white none ⟨0⟩] = fold blitz [.drawOffered .white ⟨0⟩] := by
+  native_decide
+
+/-- Because a claim is an offer, the other seat can accept it. -/
+theorem claimAccepted :
+    let log := bothPlayed ++ [.claimedThreefold .white none ⟨3000⟩, .drawAccepted .black ⟨4000⟩]
+    (look blitz log ⟨4000⟩).ending = some (.draw .agreement) := by
+  native_decide
+
+/-- A claim naming a play that mates: the mate wins. The claim is not a draw. -/
+theorem claimMateWins :
+    let front := played 1000 (scholar.take 6)
+    let log := front ++ [.claimedThreefold .white (some (mv .h .r5 .f .r7)) ⟨7000⟩]
+    (look quick log ⟨7000⟩).ending = some (.checkmate .white) ∧
+      (look quick log ⟨7000⟩).offer = none := by
+  native_decide
+
+/-- A claim naming a play that is not legal is not admitted at all. -/
+theorem claimIllegalPlay :
+    fold blitz [.claimedThreefold .white (some (mv .e .r2 .e .r5)) ⟨0⟩] = fold blitz [] ∧
+    fold blitz [.claimedFifty .white (some (mv .e .r2 .e .r5)) ⟨0⟩] = fold blitz [] := by
+  native_decide
+
+/-- A fifty-move claim that holds. No short log from the opening reaches a
+    hundred plies without a pawn move or a capture, so this fold is built
+    by hand: the opening, with the count already at 100. With no play named,
+    the claim is a draw at once. With a play named, the draw is on the play. -/
+def hundredPlies : GameState := { initial blitz with halfmove := 100 }
+
+theorem fiftyHolds :
+    (applyEvent hundredPlies (.claimedFifty .white none ⟨0⟩)).ending = some (.draw .fifty) ∧
+    (applyEvent hundredPlies (.claimedFifty .white (some (mv .g .r1 .f .r3)) ⟨0⟩)).ending
+      = some (.draw .fifty) ∧
+    (applyEvent hundredPlies (.claimedFifty .white (some (mv .g .r1 .f .r3)) ⟨0⟩)).ply = 1 ∧
+    (applyEvent { hundredPlies with halfmove := 99 }
+      (.claimedFifty .white (some (mv .g .r1 .f .r3)) ⟨0⟩)).ending = some (.draw .fifty) ∧
+    (applyEvent { hundredPlies with halfmove := 98 }
+      (.claimedFifty .white (some (mv .g .r1 .f .r3)) ⟨0⟩)).ending = none := by
   native_decide
 
 /-- White chose beforehand that a threefold be claimed for them.
@@ -230,6 +290,25 @@ theorem resignOnTheirTurn :
       (look blitz log ⟨4000⟩).turn = .black := by
   native_decide
 
+/-- The clock stops where the resignation found it. White had 294000 left
+    at 7000; a look after the resignation still says 294000, not the
+    299000 the last play left. -/
+theorem resignFreezesClock :
+    (look blitz bothPlayed ⟨7000⟩).whiteLeft = 294000 ∧
+    (look blitz (bothPlayed ++ [.resigned .white ⟨7000⟩]) ⟨7000⟩).whiteLeft = 294000 ∧
+    (look blitz (bothPlayed ++ [.resigned .white ⟨7000⟩]) ⟨99000⟩).whiteLeft = 294000 ∧
+    (look blitz (bothPlayed ++ [.resigned .white ⟨7000⟩]) ⟨99000⟩).blackLeft = 299000 := by
+  native_decide
+
+/-- The same for an agreed draw, a claim, and an abort. -/
+theorem endingsFreezeClock :
+    (look blitz (bothPlayed ++ [.drawOffered .white ⟨3000⟩, .drawAccepted .black ⟨7000⟩]) ⟨99000⟩).whiteLeft
+      = 294000 ∧
+    (look blitz (played 100 (passes 2) ++ [.claimedThreefold .white none ⟨1300⟩]) ⟨99000⟩).whiteLeft
+      = 299100 ∧
+    (look blitz (played 1000 [e4] ++ [.aborted .black ⟨5000⟩]) ⟨99000⟩).blackLeft = 296000 := by
+  native_decide
+
 theorem abortAtStart :
     let s := look blitz [.aborted .black ⟨10⟩] ⟨10⟩
     s.ending = some .abort ∧ s.counts = false ∧ Score.ofEnding .abort = none := by
@@ -241,8 +320,7 @@ theorem abortAfterOnePlay :
   native_decide
 
 theorem abortTooLate :
-    look blitz (bothPlayed ++ [.aborted .white ⟨3000⟩]) ⟨3000⟩ =
-      look blitz bothPlayed ⟨3000⟩ := by
+    fold blitz (bothPlayed ++ [.aborted .white ⟨3000⟩]) = fold blitz bothPlayed := by
   native_decide
 
 /- ====================================================================
@@ -265,16 +343,38 @@ theorem correspondencePeriod :
       later.blackLeft = day - 5000 ∧ later.whiteLeft = day := by
   native_decide
 
-/-- Nobody sends a flag. A look past the clock shows it. -/
+/-- Nobody sends a flag. A look past the clock shows it. The boundary is
+    the instant the allowance is used up: 999 is play, 1000 is the flag. -/
 theorem flagByLooking :
     (look bullet [] ⟨999⟩).ending = none ∧
-    (look bullet [] ⟨1000⟩).ending = some (.flag .black) := by
+    (look bullet [] ⟨1000⟩).ending = some (.flag .black) ∧
+    (look bullet [] ⟨1000⟩).whiteLeft = 0 := by
   native_decide
 
 /-- The play arrives as the time runs out. It is not in the fold. -/
 theorem flagLatePlay :
     let s := fold bullet [.moved e4 ⟨1000⟩]
     s.ply = 0 ∧ s.position = opening ∧ s.ending = some (.flag .black) := by
+  native_decide
+
+/-- A flag counts like any other ending. White has 299000 after e4 e5 and
+    flags at 301000. Before that instant the game is open and does not
+    count; from it on, it is a loss for White and an input to the pool.
+    The log gained nothing. -/
+theorem flagCounts :
+    (look blitz bothPlayed ⟨300999⟩).ending = none ∧
+    (look blitz bothPlayed ⟨300999⟩).counts = false ∧
+    (look blitz bothPlayed ⟨301000⟩).ending = some (.flag .black) ∧
+    (look blitz bothPlayed ⟨301000⟩).counts = true ∧
+    (look blitz bothPlayed ⟨999999⟩).ending = some (.flag .black) ∧
+    (look blitz bothPlayed ⟨999999⟩).whiteLeft = 0 ∧
+    (look blitz bothPlayed ⟨999999⟩).blackLeft = 299000 := by
+  native_decide
+
+/-- A flag before both have played does not count. -/
+theorem flagBeforeBothPlayedDoesNot :
+    (look blitz [] ⟨300000⟩).ending = some (.flag .black) ∧
+    (look blitz [] ⟨300000⟩).counts = false := by
   native_decide
 
 /-- White offered, then played, so the offer is still standing on Black's
@@ -291,8 +391,16 @@ theorem flagWithOffer :
 
 theorem alreadyEnded :
     let log := [.aborted .white ⟨10⟩]
-    look blitz (log ++ [.moved e4 ⟨20⟩]) ⟨20⟩ = look blitz log ⟨20⟩ ∧
+    fold blitz (log ++ [.moved e4 ⟨20⟩]) = fold blitz log ∧
       (look blitz log ⟨999999⟩).ending = some .abort := by
+  native_decide
+
+/-- The same ending, at every later instant. -/
+theorem endingStays :
+    let log := bothPlayed ++ [.resigned .white ⟨3000⟩]
+    (look blitz log ⟨3000⟩).ending = some (.resign .black) ∧
+    (look blitz log ⟨999999⟩).ending = some (.resign .black) ∧
+    fold blitz (log ++ [.moved (mv .g .r1 .f .r3) ⟨4000⟩]) = fold blitz log := by
   native_decide
 
 /- ====================================================================

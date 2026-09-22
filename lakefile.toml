@@ -12,7 +12,7 @@ path = "../leanreact"
 
 [[lean_lib]]
 name = "LeanChess"
-globs = ["LeanChess", "domain.Game", "domain.Deep", "domain.Lazier", "domain.Semantics"]
+globs = ["LeanChess", "domain.Game", "domain.Command", "domain.Clock", "domain.Valid", "domain.Mate", "domain.Projection", "domain.Deep", "domain.Lazier", "domain.Semantics"]
 
 [[lean_lib]]
 name = "ExampleCases"
