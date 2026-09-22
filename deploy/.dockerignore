@@ -1,0 +1,13 @@
+**/.git
+**/.lake
+**/node_modules
+**/build
+**/.DS_Store
+leandb/examples
+leandb/benchmarks
+leanreact/examples
+leanreact/docs
+leanchess/data
+leanchess/generated
+leanchess/web/dist
+**/*.sqlite

@@ -28,6 +28,9 @@ structure Look where
   you : String
   admitted : String
   board : Array PieceView
+  check : String
+  movedFrom : String
+  movedTo : String
 
 structure Game where
   id : Nat
@@ -42,6 +45,7 @@ structure Api where
   join : Session → String → Action (Except String Game)
   act : Session → Nat → String → String → String → String → Action (Except String Game)
   watch : Session → Nat → (Game → Action Unit) → Action (Action Unit)
+  machine : Session → String → Action (Except String Game)
 
 structure Props where
   api : Api
@@ -80,6 +84,13 @@ def rankOrder (you : String) : Array String :=
 def fileOrder (you : String) : Array String :=
   if you == "black" then #["h", "g", "f", "e", "d", "c", "b", "a"] else files
 
+def edgeFile (you : String) : String :=
+  (fileOrder you).getD 0 "a"
+
+def nearRank (you : String) : String :=
+  let ranks := rankOrder you
+  ranks.getD (ranks.size - 1) "1"
+
 def two (n : Nat) : String :=
   if n < 10 then "0" ++ toString n else toString n
 
@@ -90,18 +101,60 @@ def clockLabel (ms : Nat) : String :=
 def promoOf (kind toRank : String) : String :=
   if kind == "pawn" && (toRank == "8" || toRank == "1") then "queen" else ""
 
+def titled : String → String
+  | "white" => "White"
+  | "black" => "Black"
+  | other => other
+
+def spoken (name : String) : String :=
+  if name == "Machine" then "the machine" else name
+
+def pretty (look : Look) : String :=
+  match look.ending with
+  | "" =>
+      let offer := if look.offer == "" then "" else " · draw offered by " ++ titled look.offer
+      let chk := if look.check == "yes" then " · check" else ""
+      titled look.turn ++ " to move" ++ chk ++ offer
+  | "checkmate white" => "White wins · checkmate"
+  | "checkmate black" => "Black wins · checkmate"
+  | "resign white" => "White wins · resignation"
+  | "resign black" => "Black wins · resignation"
+  | "flag white" => "White wins · on time"
+  | "flag black" => "Black wins · on time"
+  | "abort" => "Aborted"
+  | "draw stalemate" => "Draw · stalemate"
+  | "draw dead" => "Draw · dead position"
+  | "draw agreement" => "Draw · agreement"
+  | "draw threefold" => "Draw · threefold repetition"
+  | "draw fifty" => "Draw · fifty moves"
+  | "draw fivefold" => "Draw · fivefold repetition"
+  | "draw seventyFive" => "Draw · seventy-five moves"
+  | "draw flagOffer" => "Draw · time, with a draw on offer"
+  | "draw flagInsufficient" => "Draw · time, and not enough to mate"
+  | "draw resignDead" => "Draw · resignation in a dead position"
+  | other => other
+
 @[noinline] def squareEl (look : Look) (selected : String) (press : String → String → Action Unit) (f r : String) : Element :=
   let sq := f ++ r
   let piece := pieceOn look.board sq
   let dark := (fileIdx f + rankIdx r) % 2 == 0
+  let inCheck := look.check == "yes" &&
+    match piece with | some p => p.kind == "king" && p.color == look.turn | none => false
   let cls := "sq"
     ++ (if dark then " dark" else " light")
     ++ (if selected == sq then " selected" else "")
+    ++ (if look.movedFrom == sq || look.movedTo == sq then " moved" else "")
+    ++ (if inCheck then " check" else "")
+  let mark := match piece with | some p => glyph p.color p.kind | none => ""
   DOM.button {
     className := some cls
     ariaLabel := some sq
     onPress := some (press f r)
-  } #[text (match piece with | some p => glyph p.color p.kind | none => "")]
+  } #[
+    text mark,
+    if f == edgeFile look.you then DOM.span { className := some "coord rank" } #[text r] else text "",
+    if r == nearRank look.you then DOM.span { className := some "coord file" } #[text f] else text ""
+  ]
 
 @[noinline] def boardEl (look : Look) (selected : String) (press : String → String → Action Unit) : Element :=
   DOM.div { className := some "board", role := some "grid", ariaLabel := some "Board" }
@@ -109,19 +162,17 @@ def promoOf (kind toRank : String) : String :=
       DOM.div { className := some "rank", role := some "row" }
         (fileOrder look.you |>.map fun f => squareEl look selected press f r))
 
-def seatLine (game : Game) : String :=
-  let you := match game.look.you with
-    | "white" => "You are white"
-    | "black" => "You are black"
-    | "both" => "You sit both seats"
-    | _ => "You are not seated"
-  you ++ " · " ++ game.white ++ " vs " ++ game.black ++ " · game " ++ toString game.id
+def clockEl (name time : String) (active : Bool) : Element :=
+  DOM.div { className := some ("clock" ++ if active then " live" else "") } #[
+    DOM.span { className := some "who" } #[text name],
+    DOM.span { className := some "time" } #[text time]
+  ]
 
-def statusLine (look : Look) : String :=
-  if look.ending != "" then look.ending
-  else
-    let offer := if look.offer == "" then "" else " · " ++ look.offer ++ " offers a draw"
-    look.turn ++ " to move" ++ offer
+def brand : Element :=
+  DOM.div { className := some "brand" } #[
+    DOM.span { className := some "mark" } #[text "♔"],
+    DOM.span { className := some "word" } #[text "LeanChess"]
+  ]
 
 def App : Component Props := component fun props => do
   let session ← useState props.saved "session"
@@ -131,6 +182,7 @@ def App : Component Props := component fun props => do
   let opponent ← useState "" "opponent"
   let joinId ← useState "" "join"
   let selected ← useState "" "selected"
+  let seat ← useState "white" "seat"
   let tokenDep := match session.value with | some s => s.token | none => ""
   let idDep := match game.value with | some g => g.id | none => 0
   useEffect #[.string tokenDep, .nat idDep] (match session.value, game.value with
@@ -172,76 +224,134 @@ def App : Component Props := component fun props => do
     | some g, some s =>
         if g.look.ending != "" then pure () else report (← props.api.act s g.id kind "" "" "")
     | _, _ => pure ()
-  let desk := match session.value with
-    | none =>
-        DOM.form { className := some "panel", onSubmit := (do
+  let signOut : Action Unit := do
+    session.set none
+    game.set none
+    selected.set ""
+    notice.set ""
+    props.api.forget
+  match session.value with
+  | none =>
+      pure <| DOM.main { className := some "gate" } #[
+        DOM.form { className := some "gate-card", onSubmit := (do
           match ← props.api.register name.value with
           | .ok s =>
               session.set (some s)
               notice.set ""
           | .error message => notice.set message) } #[
-          DOM.h1 {} #[text "LeanChess"],
+          brand,
+          DOM.p { className := some "lede" } #[text "One game, from the opening to an ending, with a clock."],
           DOM.label { htmlFor := "name" } #[text "Your name"],
-          DOM.input { id := some "name", value := some name.value, onChange := some fun event => name.set event.value },
-          DOM.button { className := some "primary", type := .submit } #[text "Register"]
+          DOM.input {
+            id := some "name"
+            autoComplete := some "nickname"
+            placeholder := some "What should the other seat call you?"
+            value := some name.value
+            onChange := some fun event => name.set event.value
+          },
+          DOM.button { className := some "primary wide", type := .submit } #[text "Take a seat"],
+          DOM.p { className := some "notice", role := some "status", ariaLive := some "polite" } #[text notice.value]
         ]
-    | some s =>
-        DOM.div { className := some "panel" } #[
-          DOM.header {} #[
-            DOM.h1 {} #[text s.name],
-            DOM.button { onPress := some (do
-              session.set none
-              game.set none
-              selected.set ""
-              props.api.forget) } #[text "Sign out"]
+      ]
+  | some s =>
+      let table := match game.value with
+        | none =>
+            DOM.section { className := some "empty" } #[
+              DOM.p { className := some "empty-mark" } #[text "♔"],
+              DOM.h1 {} #[text "The board is empty."],
+              DOM.p { className := some "lede" } #[
+                text "Play the machine, or open a game with someone who already has a name."
+              ]
+            ]
+        | some g =>
+            let youBlack := g.look.you == "black"
+            let topName := spoken (if youBlack then g.white else g.black)
+            let bottomName := spoken (if youBlack then g.black else g.white)
+            let topLeft := if youBlack then g.look.whiteLeft else g.look.blackLeft
+            let bottomLeft := if youBlack then g.look.blackLeft else g.look.whiteLeft
+            let topSide := if youBlack then "white" else "black"
+            let bottomSide := if youBlack then "black" else "white"
+            let going := g.look.ending == ""
+            DOM.section { className := some "table", ariaLabel := some "Game" } #[
+              clockEl topName (clockLabel topLeft) (going && g.look.turn == topSide),
+              boardEl g.look selected.value press,
+              clockEl bottomName (clockLabel bottomLeft) (going && g.look.turn == bottomSide),
+              DOM.p { className := some "status", role := some "status" } #[text (pretty g.look)]
+            ]
+      let rail := DOM.aside { className := some "rail" } #[
+        DOM.header { className := some "top" } #[
+          brand,
+          DOM.div { className := some "account" } #[
+            DOM.span { className := some "you" } #[text s.name],
+            DOM.button { className := some "ghost", onPress := some signOut } #[text "Sign out"]
+          ]
+        ],
+        DOM.section { className := some "card" } #[
+          DOM.h2 {} #[text "Play the machine"],
+          DOM.p { className := some "fine" } #[text "Five minutes. It sits the other side and plays one move at a time."],
+          DOM.div { className := some "seg", role := some "group", ariaLabel := some "Your color" } #[
+            DOM.button {
+              className := some (if seat.value == "white" then "on" else "")
+              onPress := some (seat.set "white")
+            } #[text "White"],
+            DOM.button {
+              className := some (if seat.value == "black" then "on" else "")
+              onPress := some (seat.set "black")
+            } #[text "Black"]
           ],
-          DOM.form { className := some "row-form", onSubmit := (do
-            report (← props.api.start s opponent.value)) } #[
-            DOM.label { htmlFor := "opponent" } #[text "Play"],
-            DOM.input {
-              id := some "opponent"
-              placeholder := some "Their name"
-              value := some opponent.value
-              onChange := some fun event => opponent.set event.value
-            },
-            DOM.button { className := some "primary", type := .submit } #[text "Start"]
-          ],
-          DOM.form { className := some "row-form", onSubmit := (do
-            report (← props.api.join s joinId.value)) } #[
-            DOM.label { htmlFor := "join" } #[text "Join"],
+          DOM.button {
+            className := some "primary wide"
+            onPress := some (do report (← props.api.machine s seat.value))
+          } #[text "Start"]
+        ],
+        DOM.form { className := some "card", onSubmit := (do
+          report (← props.api.start s opponent.value)) } #[
+          DOM.h2 {} #[text "Play a person"],
+          DOM.label { htmlFor := "opponent" } #[text "Their name"],
+          DOM.input {
+            id := some "opponent"
+            placeholder := some "Already registered"
+            value := some opponent.value
+            onChange := some fun event => opponent.set event.value
+          },
+          DOM.button { className := some "wide", type := .submit } #[text "Start"]
+        ],
+        DOM.form { className := some "card", onSubmit := (do
+          report (← props.api.join s joinId.value)) } #[
+          DOM.h2 {} #[text "Open a game"],
+          DOM.label { htmlFor := "join" } #[text "Number"],
+          DOM.div { className := some "inline" } #[
             DOM.input {
               id := some "join"
-              placeholder := some "Game number"
+              placeholder := some "12"
               value := some joinId.value
               onChange := some fun event => joinId.set event.value
             },
             DOM.button { type := .submit } #[text "Open"]
           ]
-        ]
-  let table := match game.value with
-    | none => DOM.p { className := some "note" } #[text "Start a game, or open one by its number."]
-    | some g =>
-        let top := if g.look.you == "black" then g.look.whiteLeft else g.look.blackLeft
-        let bottom := if g.look.you == "black" then g.look.blackLeft else g.look.whiteLeft
-        let topName := if g.look.you == "black" then g.white else g.black
-        let bottomName := if g.look.you == "black" then g.black else g.white
-        DOM.section { className := some "table" } #[
-          DOM.p { className := some "meta" } #[text (seatLine g)],
-          DOM.p { className := some "clock" } #[text (topName ++ " " ++ clockLabel top)],
-          boardEl g.look selected.value press,
-          DOM.p { className := some "clock" } #[text (bottomName ++ " " ++ clockLabel bottom)],
-          DOM.p { className := some "status", role := some "status" } #[text (statusLine g.look)],
-          DOM.div { className := some "controls" } #[
-            DOM.button { onPress := some (send "resign") } #[text "Resign"],
-            DOM.button { onPress := some (send "offer") } #[text "Offer draw"],
-            DOM.button { onPress := some (send "accept") } #[text "Accept"],
-            DOM.button { onPress := some (send "decline") } #[text "Decline"]
-          ]
-        ]
-  pure <| DOM.main { className := some "page" } #[
-    desk,
-    table,
-    DOM.p { className := some "note", role := some "status", ariaLive := some "polite" } #[text notice.value]
-  ]
+        ],
+        match game.value with
+        | none => text ""
+        | some g =>
+            DOM.section { className := some "card quiet" } #[
+              DOM.p { className := some "fine" } #[
+                text (spoken g.white ++ " · " ++ spoken g.black ++ " · game " ++ toString g.id)
+              ],
+              DOM.div { className := some "controls" } #[
+                DOM.button { onPress := some (send "resign"), disabled := g.look.ending != "" } #[text "Resign"],
+                DOM.button { onPress := some (send "offer"), disabled := g.look.ending != "" } #[text "Offer draw"],
+                DOM.button { onPress := some (send "accept"), disabled := g.look.ending != "" } #[text "Accept"],
+                DOM.button { onPress := some (send "decline"), disabled := g.look.ending != "" } #[text "Decline"]
+              ],
+              DOM.button { className := some "ghost", onPress := some (do
+                game.set none
+                selected.set ""
+                notice.set "") } #[text "Leave this board"]
+            ],
+        DOM.p { className := some "notice", role := some "status", ariaLive := some "polite" } #[text notice.value]
+      ]
+      pure <| DOM.main { className := some "page" } #[
+        DOM.div { className := some "stage" } #[table, rail]
+      ]
 
 end LeanChess.Ui

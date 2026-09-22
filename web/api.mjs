@@ -34,6 +34,9 @@ function gameToLean(body, admitted) {
       text(look.you),
       admitted,
       (look.board ?? []).map(pieceToLean),
+      look.check === true ? 'yes' : '',
+      text(look.movedFrom),
+      text(look.movedTo),
     ]),
   ]);
 }
@@ -125,8 +128,16 @@ export function createApi(base) {
         await update.execute();
       };
       await pull();
-      const timer = setInterval(pull, 1000);
+      const timer = setInterval(pull, 500);
       return action(() => { stopped = true; clearInterval(timer); });
+    }),
+    (session, color) => action(async () => {
+      const result = await call(base, '/games', {
+        method: 'POST',
+        token: session.fields[1],
+        body: { bot: true, color, rated: false },
+      });
+      return result.tag === 'Except.ok' ? ok(gameToLean(result.fields[0], '')) : result;
     }),
   ]);
 }

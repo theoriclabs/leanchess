@@ -4,6 +4,7 @@
   POST /users                  { "name", "autoClaim"? }
   POST /games                  Authorization: Bearer <token>
                                { "opponent", "color"?, "rated"?, "initialMs"?, "incrementMs"? }
+                               { "bot": true, "color"? } seats the machine, unrated
   GET  /games/<id>?at=<ms>     Authorization: Bearer <token>
   POST /games/<id>/acts        Authorization: Bearer <token>
                                { "kind", "at", "from"?, "to"?, "promotion"?, "claim"?, "seat"? }
@@ -11,6 +12,9 @@
   `kind` is play, resign, offer, accept, decline, claim, or abort.
   The seat is the person the token names. A client does not send the
   position or the clock; the response look is the fold.
+
+  `--web` serves the page from that directory on GET. The API paths stay
+  the fold. `--host` defaults to loopback.
 -/
 
 import Std.Http
@@ -30,6 +34,34 @@ partial def readBody (stream : Body.Stream) (limit : Nat) : ContextAsync (Option
         if bytes.size + chunk.data.size > limit then return none
         loop (bytes ++ chunk.data)
   loop ByteArray.empty
+
+structure WebFile where
+  name : String
+  mime : String
+  bytes : ByteArray
+
+def mimeOf : String → String
+  | "app.js" => "text/javascript; charset=utf-8"
+  | "style.css" => "text/css; charset=utf-8"
+  | "index.html" => "text/html; charset=utf-8"
+  | _ => "application/octet-stream"
+
+def loadWeb (root : String) : IO (List WebFile) := do
+  if root.isEmpty then return []
+  let mut files : List WebFile := []
+  for name in ["index.html", "app.js", "style.css"] do
+    let path := System.FilePath.mk root / name
+    if ← path.pathExists then
+      if !(← path.isDir) then
+        files := { name, mime := mimeOf name, bytes := ← IO.FS.readBinFile path } :: files
+  return files
+
+def fileRespond (mime : String) (bytes : ByteArray) : ContextAsync (Response Body.Any) := do
+  let r ← (Response.ok.header! "content-type" mime).fromBytes bytes
+  let allow (line : Response.Head) (k v : String) : Response.Head :=
+    { line with headers := line.headers.insert (Header.Name.ofString! k) (Header.Value.ofString! v) }
+  let line := allow r.line "access-control-allow-origin" "*"
+  return { line, body := Body.Any.ofBody r.body, extensions := r.extensions }
 
 def respond (status : Nat) (j : Json) : ContextAsync (Response Body.Any) := do
   let code : Status :=
@@ -64,11 +96,20 @@ def parseId (s : String) : Option Int64 :=
       if i < 0 || i > Int64.maxValue.toInt then none else some (Int64.ofInt i)
   | none => none
 
-def handle (lock : Std.Mutex Conn) (req : Request Body.Stream) : ContextAsync (Response Body.Any) := do
+def isApi (segs : List String) : Bool :=
+  segs.head? == some "users" || segs.head? == some "games" || segs == ["healthz"]
+
+def handle (lock : Std.Mutex Conn) (web : List WebFile) (req : Request Body.Stream) :
+    ContextAsync (Response Body.Any) := do
   let method := (toString req.line.method).toUpper
   let segs := (req.line.uri.path.toDecodedSegments.toList).filter (!·.isEmpty)
   if method == "OPTIONS" || (method == "GET" && segs == ["healthz"]) then
     return ← respond 200 (Json.mkObj [("ok", .bool true)])
+  if method == "GET" && !web.isEmpty && !isApi segs then
+    let name := if segs.isEmpty then "index.html" else "/".intercalate segs
+    match web.find? (·.name == name) with
+    | some file => return ← fileRespond file.mime file.bytes
+    | none => return ← respond 404 (Json.mkObj [("ok", .bool false), ("error", .str "not found")])
   let some bytes ← readBody req.body (2 * 1024 * 1024) |
     return ← respond 400 (Json.mkObj [("ok", .bool false), ("error", .str "request body too large")])
   let body? := if bytes.isEmpty then none else String.fromUTF8? bytes
@@ -111,14 +152,16 @@ def handle (lock : Std.Mutex Conn) (req : Request Body.Stream) : ContextAsync (R
                 | .ok u => attempt u id body
       | _, _ => respond 404 (Json.mkObj [("ok", .bool false), ("error", .str "no such route")])
 
-def serve (db : Conn) (port : UInt16) : IO UInt32 := do
-  let addr : Net.SocketAddress := .v4 { addr := Net.IPv4Addr.ofParts 127 0 0 1, port }
+def serve (db : Conn) (host : Net.IPv4Addr) (hostName : String) (port : UInt16) (web : List WebFile) :
+    IO UInt32 := do
+  let addr : Net.SocketAddress := .v4 { addr := host, port }
   let lock ← Std.Mutex.new db
-  let handler := Std.Http.Server.Handler.ofFn (handle lock)
+  let handler := Std.Http.Server.Handler.ofFn (handle lock web)
   IO.eprintln (Json.mkObj [
     ("event", .str "leanchess.ready"),
-    ("host", .str "127.0.0.1"),
-    ("port", toJson port.toNat)]).compress
+    ("host", .str hostName),
+    ("port", toJson port.toNat),
+    ("web", .bool !web.isEmpty)]).compress
   let config : Std.Http.Config := { generateDate := false }
   Async.block do
     let server ← Std.Http.Server.serve addr handler config

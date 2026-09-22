@@ -222,7 +222,14 @@ def boardJson (b : Board) : Json :=
     ("kind", .str (kindName p.piece.kind))
   ]).toArray
 
-def lookJson (s : GameState) (d : Instant) (you : String) (admitted : Option Bool) : Json :=
+def lastSquares (events : List GameEvent) : String × String :=
+  events.foldl (fun acc e =>
+    match e with
+    | .moved m _ => (squareName m.src, squareName m.to)
+    | _ => acc) ("", "")
+
+def lookJson (s : GameState) (d : Instant) (you : String) (admitted : Option Bool)
+    (movedFrom : String := "") (movedTo : String := "") : Json :=
   let rights := s.position.rights
   let base := [
     ("ending", endingJson (resultAt s d)),
@@ -233,6 +240,9 @@ def lookJson (s : GameState) (d : Instant) (you : String) (admitted : Option Boo
     ("ply", toJson s.ply),
     ("counts", .bool (countsForRating s)),
     ("you", .str you),
+    ("check", .bool ((resultAt s d).isNone && inCheck s.position)),
+    ("movedFrom", if movedFrom == "" then .null else .str movedFrom),
+    ("movedTo", if movedTo == "" then .null else .str movedTo),
     ("board", boardJson s.position.board),
     ("rights", Json.mkObj [
       ("wk", .bool rights.wk), ("wq", .bool rights.wq),
