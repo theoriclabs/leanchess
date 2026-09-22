@@ -139,4 +139,4 @@ The database lives on a Railway volume at `/data`. When a release changes what c
 
 ## License
 
-No license has been chosen yet.
+MIT. Copyright (c) 2026 Theoriclabs, Inc. See [`LICENSE`](LICENSE).
