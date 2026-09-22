@@ -13,11 +13,13 @@ No file under `domain/`, `api/`, or `example_cases/` contains `sorry` or a custo
 
 | Claim | Kind | Where |
 |---|---|---|
-| A legal move is one `legalMoves` lists, and nothing else | Proved | `applyMove_pseudo`, `mem_legalMoves` |
+| A legal move is a candidate the geometry names, written by `enact`, after which the mover's king is safe | Proved | `applyMove_spec` |
+| A legal move is one `legalMoves` lists, and nothing else | Proved | `mem_legalMoves` |
 | After a legal move the mover's king is not attacked | Proved | `applyMove_king_safe` |
 | A legal move hands the turn over | Proved | `applyMove_side` |
 | A right, once lost, stays lost | Proved | `applyMove_rights` |
 | Opening, scholar's mate, castling, en passant, a flag, an abort, an agreed draw | Checked | `#guard` at the end of the file |
+| The generator counts 8902 positions three plies from the opening, the published figure | Checked | `#guard perft opening 3` |
 
 ## Admission (`domain/Command.lean`, `domain/Semantics.lean`)
 

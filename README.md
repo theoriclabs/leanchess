@@ -23,7 +23,7 @@ One Lean definition of the game is the meaning. It does not import a widget, a t
 
 | | |
 |---|---|
-| **Legality** | A legal move is one `legalMoves` lists, and nothing else. After it, the mover's king is not attacked. |
+| **Legality** | Motion is stated once: each kind of piece has rays, and slides or steps. A legal move is a candidate that leaves the mover's king safe, and is exactly what `legalMoves` lists. |
 | **Admission** | An accepted event is this command, for this seat, at the server's instant. Only the side to move can play, offer, or claim. A refusal appends nothing. |
 | **Consistency** | Every fold of every log is consistent: one key per ply, side by parity, halfmove ≤ ply, nothing changes after an ending. |
 | **Time** | Once a flag falls, every later look sees it. An ending stops the clock at its own instant. A game that counts for rating at `d` counts at every later `d'`. |
@@ -46,8 +46,6 @@ domain/          The meaning. No I/O.
   Mate.lean        What a dead position means, and what the detector establishes
   Projection.lean  When a stored copy of the fold may be trusted
   Semantics.lean   The server's step, built on `admit`
-  Deep.lean        The same game as a deep embedding: laws as values, lazy play
-  Lazier.lean      One step further: castling and promotion as data, lazy boards
 example_cases/   The user flows, inhabited: one agreement, one log, one look each
 api/             The boundary: HTTP, the LeanDB store, the machine player, the audit
 ui/              The board, written in LeanReact and compiled to JavaScript

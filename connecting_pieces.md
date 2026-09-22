@@ -173,7 +173,7 @@ Extend the existing LeanApp test harness and example proofs rather than treating
 
 Keep a simple reference interpretation while optimizing execution. Incremental game state should equal replay at its committed revision. Query indexes and cached views should match their reference queries. Cache keys and invalidation must include the authority and policy dependencies relevant to private results. State-dependent optimizations must preserve confidentiality as well as returned values; ordinary single-execution trace refinement alone is insufficient to establish that relational claim.
 
-For speed, measure the compiled path: request parsing, authorization, queueing, database work, domain computation, and delivery. Prove cost bounds where the model supports them, and use benchmarks to compare correct candidates. The existing `Deep` and `Lazier` evaluators are candidates for study, not interchangeable engines until their relevant equivalence properties have been established.
+For speed, measure the compiled path: request parsing, authorization, queueing, database work, domain computation, and delivery. Prove cost bounds where the model supports them, and use benchmarks to compare correct candidates. A lazy or deeply embedded evaluator is a refinement of `domain/Game.lean`, adopted only with a proof that it agrees.
 
 ## A practical order of work
 

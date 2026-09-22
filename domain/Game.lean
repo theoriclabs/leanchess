@@ -95,10 +95,6 @@ inductive PieceKind where
   | king | queen | rook | bishop | knight | pawn
   deriving Repr, DecidableEq, Ord, Hashable
 
-def PieceKind.promotes : PieceKind → Bool
-  | .queen | .rook | .bishop | .knight => true
-  | _ => false
-
 structure Piece where
   color : Color
   kind : PieceKind
@@ -185,19 +181,20 @@ def backRank (c : Color) (rank : Rank) : Board :=
   let kinds : List PieceKind := [.rook, .knight, .bishop, .queen, .king, .bishop, .knight, .rook]
   File.all.zip kinds |>.map fun (file, k) => ⟨⟨file, rank⟩, ⟨c, k⟩⟩
 
-def pawnRank (c : Color) (rank : Rank) : Board :=
+def pawnRow (c : Color) (rank : Rank) : Board :=
   File.all.map fun file => ⟨⟨file, rank⟩, ⟨c, .pawn⟩⟩
 
 def opening : Position where
   board := sortBoard (
-    backRank .white .r1 ++ pawnRank .white .r2 ++
-    pawnRank .black .r7 ++ backRank .black .r8)
+    backRank .white .r1 ++ pawnRow .white .r2 ++
+    pawnRow .black .r7 ++ backRank .black .r8)
   side := .white
   rights := Rights.opening
   ep := none
 
 /- ====================================================================
-   Attacks
+   Motion. Each kind of piece has rays, and slides along them or steps
+   once. A pawn is the exception, and is written out below.
    ==================================================================== -/
 
 /-- One act on the board. Castling is the king moving two squares.
@@ -208,6 +205,38 @@ structure Move where
   promotion : Option PieceKind := none
   deriving Repr, DecidableEq, Hashable
 
+def orthogonal : List (Int × Int) := [(1, 0), (-1, 0), (0, 1), (0, -1)]
+
+def diagonal : List (Int × Int) := [(1, 1), (1, -1), (-1, 1), (-1, -1)]
+
+def PieceKind.rays : PieceKind → List (Int × Int)
+  | .knight => [(1, 2), (1, -2), (-1, 2), (-1, -2), (2, 1), (2, -1), (-2, 1), (-2, -1)]
+  | .rook => orthogonal
+  | .bishop => diagonal
+  | .queen | .king => orthogonal ++ diagonal
+  | .pawn => []
+
+def PieceKind.slides : PieceKind → Bool
+  | .rook | .bishop | .queen => true
+  | _ => false
+
+def PieceKind.promotions : List PieceKind := [.queen, .rook, .bishop, .knight]
+
+def pawnDir : Color → Int
+  | .white => 1
+  | .black => -1
+
+def homeRank : Color → Rank
+  | .white => .r1
+  | .black => .r8
+
+def pawnRank : Color → Rank
+  | .white => .r2
+  | .black => .r7
+
+def lastRank (c : Color) : Rank := homeRank c.other
+
+/-- Squares along `(df, dr)` from `src`, up to and including the first occupied one. -/
 def slide (b : Board) (src : Square) (df dr : Int) : List Square :=
   let rec go (fuel : Nat) (s : Square) : List Square :=
     match fuel with
@@ -221,31 +250,17 @@ def slide (b : Board) (src : Square) (df dr : Int) : List Square :=
         | some _ => [s']
   go 7 src
 
-def knightOffsets : List (Int × Int) :=
-  [(1, 2), (1, -2), (-1, 2), (-1, -2), (2, 1), (2, -1), (-2, 1), (-2, -1)]
+/-- Squares a piece of kind `k` on `s` reaches: every step, or every slide. -/
+def reach (b : Board) (s : Square) (k : PieceKind) : List Square :=
+  k.rays.flatMap fun (df, dr) =>
+    if k.slides then slide b s df dr else (s.offset df dr).toList
 
-def kingOffsets : List (Int × Int) :=
-  [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)]
+def pawnAttacks (c : Color) (s : Square) : List Square :=
+  [s.offset 1 (pawnDir c), s.offset (-1) (pawnDir c)].filterMap id
 
-def rookDirs : List (Int × Int) := [(1, 0), (-1, 0), (0, 1), (0, -1)]
-
-def bishopDirs : List (Int × Int) := [(1, 1), (1, -1), (-1, 1), (-1, -1)]
-
-def pawnDir : Color → Int
-  | .white => 1
-  | .black => -1
-
-/-- Squares `c` attacks. A pin does not remove an attack. -/
+/-- Squares `pc` on `s` attacks. A pin does not remove an attack. -/
 def attacksFrom (b : Board) (s : Square) (pc : Piece) : List Square :=
-  match pc.kind with
-  | .knight => knightOffsets.filterMap fun (df, dr) => s.offset df dr
-  | .king => kingOffsets.filterMap fun (df, dr) => s.offset df dr
-  | .rook => rookDirs.flatMap fun (df, dr) => slide b s df dr
-  | .bishop => bishopDirs.flatMap fun (df, dr) => slide b s df dr
-  | .queen => (rookDirs ++ bishopDirs).flatMap fun (df, dr) => slide b s df dr
-  | .pawn =>
-    let d := pawnDir pc.color
-    [s.offset 1 d, s.offset (-1) d].filterMap id
+  if pc.kind == .pawn then pawnAttacks pc.color s else reach b s pc.kind
 
 def attacked (b : Board) (by_ : Color) (target : Square) : Bool :=
   b.any fun p =>
@@ -259,140 +274,93 @@ def kingAttacked (p : Position) (c : Color) : Bool :=
 def inCheck (p : Position) : Bool :=
   kingAttacked p p.side
 
-def destEnemyOrEmpty (b : Board) (c : Color) (s : Square) : Bool :=
-  match b.get s with
-  | none => true
-  | some pc => pc.color != c
-
-def between (src to : Square) : Option (List Square) :=
-  let df := (to.file.index : Int) - src.file.index
-  let dr := (to.rank.index : Int) - src.rank.index
-  let stepf := if df < 0 then (-1 : Int) else if df == 0 then 0 else 1
-  let stepr := if dr < 0 then (-1 : Int) else if dr == 0 then 0 else 1
-  let aligned := (df == 0) != (dr == 0) || (df != 0 && df.natAbs == dr.natAbs)
-  if !aligned || (df == 0 && dr == 0) then none
-  else
-    let rec go (fuel : Nat) (s : Square) : Option (List Square) :=
-      match fuel with
-      | 0 => none
-      | n + 1 =>
-        match s.offset stepf stepr with
-        | none => none
-        | some s' =>
-          if s' == to then some []
-          else (go n s').map (s' :: ·)
-    go 7 src
-
-def pathClear (b : Board) (src to : Square) : Bool :=
-  match between src to with
-  | none => false
-  | some ss => ss.all fun s => b.get s == none
-
 /- ====================================================================
-   A move, as what it does. `describe` decides the geometry and names
-   the effect. `enact` writes it. The two are kept apart so that what
-   a move does to the board is one straight-line function.
+   Moves. `candidates` names every move the geometry allows, each with
+   what it does. `enact` writes that. A legal move is a candidate after
+   which the mover's king is safe.
    ==================================================================== -/
 
-/-- What a move does. The board writes are `enact`. -/
+/-- What a move does besides moving the piece. -/
 structure Effect where
   /-- The piece that lands on `to`: the mover's piece, or the promotion. -/
   arrives : Piece
   /-- A captured piece that does not stand on `to`: en passant. -/
-  taken : Option Square
+  taken : Option Square := none
   /-- The rook's displacement inside castling. -/
-  rook : Option (Square × Square)
+  rook : Option (Square × Square) := none
   /-- The en passant square this move leaves for the reply. -/
-  ep : Option Square
-  /-- A pawn move or a capture. The halfmove count restarts. -/
-  resets : Bool
+  ep : Option Square := none
   deriving Repr, DecidableEq
 
-def rookHome (c : Color) (kingside : Bool) : Square :=
-  if c == .white then
-    if kingside then ⟨.h, .r1⟩ else ⟨.a, .r1⟩
-  else if kingside then ⟨.h, .r8⟩ else ⟨.a, .r8⟩
+/-- A piece other than a pawn: every square it reaches that its own side does not hold. -/
+def pieceMoves (p : Position) (s : Square) (pc : Piece) : List (Move × Effect) :=
+  (reach p.board s pc.kind).filterMap fun t =>
+    if (p.board.get t).any (·.color == pc.color) then none
+    else some (⟨s, t, none⟩, { arrives := pc })
 
-/-- Geometry only. King safety is `applyMove`. -/
-def describe (p : Position) (m : Move) : Option Effect := do
-  let pc ← p.board.get m.src
-  if pc.color != p.side then none
-  if m.src == m.to then none
-  let dir := pawnDir p.side
-  let startRank : Rank := match p.side with | .white => .r2 | .black => .r7
-  let lastRank : Rank := match p.side with | .white => .r8 | .black => .r1
-  let promoting := pc.kind == .pawn && m.to.rank == lastRank
-  if promoting && !m.promotion.any PieceKind.promotes then none
-  if !promoting && m.promotion.isSome then none
-  let arrives : Piece := ⟨pc.color, m.promotion.getD pc.kind⟩
-  let plain (taken : Bool) : Effect :=
-    { arrives, taken := none, rook := none, ep := none, resets := pc.kind == .pawn || taken }
-  let df := (m.to.file.index : Int) - m.src.file.index
-  let dr := (m.to.rank.index : Int) - m.src.rank.index
-  match pc.kind with
-  | .pawn =>
-    let one := m.src.offset 0 dir
-    let two := m.src.offset 0 (dir * 2)
-    let caps := [m.src.offset 1 dir, m.src.offset (-1) dir].filterMap id
-    if some m.to == one then
-      if p.board.get m.to != none then none
-      return plain false
-    else if m.src.rank == startRank && some m.to == two && m.promotion.isNone then
-      match one with
-      | none => none
-      | some mid =>
-        if p.board.get mid != none || p.board.get m.to != none then none
-        return { plain false with ep := some mid }
-    else if caps.contains m.to then
-      if p.ep == some m.to && p.board.get m.to == none then
-        -- en passant: the captured pawn stands behind the landing square
-        let capSq ← m.to.offset 0 (-dir)
-        match p.board.get capSq with
-        | some victim =>
-          if victim.color == p.side || victim.kind != .pawn then none
-          return { plain true with taken := some capSq }
-        | none => none
+/-- Pushes, the double step, captures, en passant, and promotion on the last rank. -/
+def pawnMoves (p : Position) (s : Square) : List (Move × Effect) :=
+  let c := p.side
+  let d := pawnDir c
+  let pawn : Piece := ⟨c, .pawn⟩
+  let promote (t : Square) (e : Effect) : List (Move × Effect) :=
+    if t.rank == lastRank c then
+      PieceKind.promotions.map fun k => (⟨s, t, some k⟩, { e with arrives := ⟨c, k⟩ })
+    else [(⟨s, t, none⟩, e)]
+  let empty (t : Square) := p.board.get t == none
+  let pushes := match s.offset 0 d with
+    | some t =>
+      if !empty t then []
       else
-        match p.board.get m.to with
-        | some victim =>
-          if victim.color == p.side then none
-          return plain true
-        | none => none
-    else
-      none
-  | .knight =>
-    if !knightOffsets.contains (df, dr) || !destEnemyOrEmpty p.board p.side m.to then none
-    return plain (p.board.get m.to).isSome
-  | .king =>
-    if df.natAbs == 2 && dr == 0 then
-      let kingside := df > 0
-      if !p.rights.allows p.side kingside then none
-      if kingAttacked p p.side then none
-      let rookFrom := rookHome p.side kingside
-      let rookTo ← m.src.offset (if kingside then 1 else -1) 0
-      if p.board.get rookFrom != some ⟨p.side, .rook⟩ then none
-      if !pathClear p.board m.src rookFrom then none
-      -- the king crosses the rook's landing square; the landing square is king safety
-      if attacked p.board p.side.other rookTo then none
-      return { arrives := pc, taken := none, rook := some (rookFrom, rookTo), ep := none, resets := false }
-    else if df.natAbs ≤ 1 && dr.natAbs ≤ 1 && (df != 0 || dr != 0) then
-      if !destEnemyOrEmpty p.board p.side m.to then none
-      return plain (p.board.get m.to).isSome
-    else
-      none
-  | .rook | .bishop | .queen =>
-    let straight := df == 0 || dr == 0
-    let diagonal := df != 0 && df.natAbs == dr.natAbs
-    let shape :=
-      match pc.kind with
-      | .rook => straight && (df != 0 || dr != 0)
-      | .bishop => diagonal
-      | .queen => (straight && (df != 0 || dr != 0)) || diagonal
-      | _ => false
-    if !shape || !pathClear p.board m.src m.to || !destEnemyOrEmpty p.board p.side m.to then none
-    return plain (p.board.get m.to).isSome
+        let double := match s.offset 0 (2 * d) with
+          | some t2 =>
+            if s.rank == pawnRank c && empty t2 then [(⟨s, t2, none⟩, { arrives := pawn, ep := some t })]
+            else []
+          | none => []
+        promote t { arrives := pawn } ++ double
+    | none => []
+  let captures := (pawnAttacks c s).flatMap fun t =>
+    match p.board.get t with
+    | some v => if v.color == c then [] else promote t { arrives := pawn }
+    | none =>
+      match t.offset 0 (-d) with
+      | some behind =>
+        if p.ep == some t && p.board.get behind == some ⟨c.other, .pawn⟩ then
+          [(⟨s, t, none⟩, { arrives := pawn, taken := some behind })]
+        else []
+      | none => []
+  pushes ++ captures
 
-/-- Write an effect. Clears `src` and the taken square, lands the arriving
+def rookHome (c : Color) (kingside : Bool) : Square :=
+  ⟨if kingside then .h else .a, homeRank c⟩
+
+/-- The king two squares toward a rook: the right is kept, the king is not in
+    check, the squares between are empty, and the square it crosses is not
+    attacked. The square it lands on is king safety, like any move. -/
+def castles (p : Position) (s : Square) : List (Move × Effect) :=
+  let c := p.side
+  if s != ⟨.e, homeRank c⟩ || inCheck p then []
+  else
+    [true, false].filterMap fun kingside => do
+      let dir : Int := if kingside then 1 else -1
+      let rook := rookHome c kingside
+      let crossed ← s.offset dir 0
+      let landing ← s.offset (2 * dir) 0
+      if !p.rights.allows c kingside then none
+      if p.board.get rook != some ⟨c, .rook⟩ then none
+      if !(slide p.board s dir 0).contains rook then none
+      if attacked p.board c.other crossed then none
+      pure (⟨s, landing, none⟩, { arrives := ⟨c, .king⟩, rook := some (rook, crossed) })
+
+def candidates (p : Position) : List (Move × Effect) :=
+  p.board.flatMap fun ⟨s, pc⟩ =>
+    if pc.color != p.side then []
+    else match pc.kind with
+      | .pawn => pawnMoves p s
+      | .king => pieceMoves p s pc ++ castles p s
+      | _ => pieceMoves p s pc
+
+/-- Write a move. Clears `src` and the taken square, lands the arriving
     piece, moves the rook, vacates the rights of every square left, hands
     the turn over. -/
 def enact (p : Position) (m : Move) (e : Effect) : Position :=
@@ -410,130 +378,58 @@ def enact (p : Position) (m : Move) (e : Effect) : Position :=
     | none => rights
   { board, side := p.side.other, rights, ep := e.ep }
 
-def applyGeometry (p : Position) (m : Move) : Option Position :=
-  (describe p m).map (enact p m)
+/-- `m` among the candidates `cs` of `p`, played, if the mover's king is then safe. -/
+def playIn (p : Position) (cs : List (Move × Effect)) (m : Move) : Option Position := do
+  let (_, e) ← cs.find? (·.1 == m)
+  let p' := enact p m e
+  if kingAttacked p' p.side then none else pure p'
 
-/-- The geometry, and the mover's king safe afterwards. -/
-def applySafe (p : Position) (m : Move) : Option Position :=
-  match applyGeometry p m with
-  | none => none
-  | some p' =>
-    if kingAttacked p' p.side then none else some p'
-
-/-- The moves the side to move could try: every destination a piece's
-    motion names, before the geometry and king safety are checked. -/
-def pseudoMoves (p : Position) : List Move :=
-  p.board.foldl (init := []) fun acc pl =>
-    if pl.piece.color != p.side then acc
-    else
-      let extras :=
-        match pl.piece.kind with
-        | .pawn =>
-          let d := pawnDir p.side
-          let last : Rank := match p.side with | .white => .r8 | .black => .r1
-          let targets :=
-            [pl.square.offset 0 d, pl.square.offset 0 (d * 2),
-             pl.square.offset 1 d, pl.square.offset (-1) d].filterMap id
-          targets.flatMap fun t =>
-            if t.rank == last then
-              [Move.mk pl.square t (some .queen), ⟨pl.square, t, some .rook⟩,
-               ⟨pl.square, t, some .bishop⟩, ⟨pl.square, t, some .knight⟩]
-            else
-              [⟨pl.square, t, none⟩]
-        | .knight =>
-          knightOffsets.filterMap fun (df, dr) =>
-            (pl.square.offset df dr).map fun t => ⟨pl.square, t, none⟩
-        | .king =>
-          let steps := kingOffsets.filterMap fun (df, dr) =>
-            (pl.square.offset df dr).map fun t => Move.mk pl.square t none
-          let castle : List Move :=
-            let home : Square := match p.side with | .white => ⟨.e, .r1⟩ | .black => ⟨.e, .r8⟩
-            if pl.square != home then []
-            else
-              let ks : Square := match p.side with | .white => ⟨.g, .r1⟩ | .black => ⟨.g, .r8⟩
-              let qs : Square := match p.side with | .white => ⟨.c, .r1⟩ | .black => ⟨.c, .r8⟩
-              [⟨pl.square, ks, none⟩, ⟨pl.square, qs, none⟩]
-          steps ++ castle
-        | .rook =>
-          rookDirs.flatMap fun (df, dr) =>
-            (slide p.board pl.square df dr).map fun t => ⟨pl.square, t, none⟩
-        | .bishop =>
-          bishopDirs.flatMap fun (df, dr) =>
-            (slide p.board pl.square df dr).map fun t => ⟨pl.square, t, none⟩
-        | .queen =>
-          (rookDirs ++ bishopDirs).flatMap fun (df, dr) =>
-            (slide p.board pl.square df dr).map fun t => ⟨pl.square, t, none⟩
-      acc ++ extras
-
-/-- A legal move in `p`: one of the moves a piece's motion names, whose
-    geometry holds, and after which the mover's king is safe. `none`
-    otherwise. This is the one notion of legality: `legalMoves` lists
-    exactly the moves this accepts. -/
+/-- A legal move in `p`, played. `none` otherwise. -/
 def applyMove (p : Position) (m : Move) : Option Position :=
-  if (pseudoMoves p).contains m then applySafe p m else none
+  playIn p (candidates p) m
 
+/-- The legal moves: exactly those `applyMove` accepts (`mem_legalMoves`). -/
 def legalMoves (p : Position) : List Move :=
-  pseudoMoves p |>.filter fun m => (applySafe p m).isSome
+  let cs := candidates p
+  cs.map (·.1) |>.filter fun m => (playIn p cs m).isSome
 
-theorem applyMove_pseudo {p : Position} {m : Move} {p' : Position}
-    (h : applyMove p m = some p') : m ∈ pseudoMoves p ∧ applySafe p m = some p' := by
-  unfold applyMove at h
-  split at h
-  · rename_i hc
-    exact ⟨List.contains_iff_mem.mp hc, h⟩
-  · exact absurd h (by simp)
+/-- What a legal move is: a candidate, written by `enact`, the mover's king safe. -/
+theorem applyMove_spec {p : Position} {m : Move} {p' : Position}
+    (h : applyMove p m = some p') :
+    ∃ e, (m, e) ∈ candidates p ∧ p' = enact p m e ∧ kingAttacked p' p.side = false := by
+  unfold applyMove playIn at h
+  cases hf : (candidates p).find? (·.1 == m) with
+  | none => simp [hf] at h
+  | some c =>
+    obtain ⟨m', e⟩ := c
+    have hm : m' = m := by simpa using List.find?_some hf
+    subst hm
+    simp only [hf] at h
+    by_cases hk : kingAttacked (enact p m' e) p.side = true
+    · simp [hk] at h
+    · simp [hk] at h
+      subst h
+      exact ⟨e, List.mem_of_find?_eq_some hf, rfl, by simpa using hk⟩
 
 theorem mem_legalMoves {p : Position} {m : Move} :
     m ∈ legalMoves p ↔ ∃ p', applyMove p m = some p' := by
-  unfold legalMoves applyMove
-  simp only [List.mem_filter, Option.isSome_iff_exists]
+  simp only [legalMoves, List.mem_filter, List.mem_map, Option.isSome_iff_exists]
   constructor
-  · rintro ⟨hm, p', hp'⟩
-    exact ⟨p', by rw [if_pos (List.contains_iff_mem.mpr hm)]; exact hp'⟩
-  · rintro ⟨p', hp'⟩
-    split at hp'
-    · rename_i hc
-      exact ⟨List.contains_iff_mem.mp hc, p', hp'⟩
-    · exact absurd hp' (by simp)
+  · rintro ⟨_, h⟩; exact h
+  · rintro ⟨p', h⟩
+    obtain ⟨e, he, -, -⟩ := applyMove_spec h
+    exact ⟨⟨(m, e), he, rfl⟩, p', h⟩
 
 /-- After a legal move the mover's king is not attacked. -/
 theorem applyMove_king_safe {p : Position} {m : Move} {p' : Position}
-    (h : applyMove p m = some p') : kingAttacked p' p.side = false := by
-  have hs := (applyMove_pseudo h).2
-  unfold applySafe at hs
-  cases hg : applyGeometry p m with
-  | none => simp [hg] at hs
-  | some q =>
-    simp only [hg] at hs
-    by_cases hk : kingAttacked q p.side = true
-    · simp [hk] at hs
-    · simp [hk] at hs
-      rw [← hs]
-      simpa using hk
-
-theorem applyGeometry_side {p : Position} {m : Move} {p' : Position}
-    (h : applyGeometry p m = some p') : p'.side = p.side.other := by
-  unfold applyGeometry at h
-  cases hd : describe p m with
-  | none => rw [hd] at h; exact absurd h (by simp)
-  | some e => rw [hd] at h; cases h; rfl
-
-theorem applySafe_geometry {p : Position} {m : Move} {p' : Position}
-    (h : applySafe p m = some p') : applyGeometry p m = some p' := by
-  unfold applySafe at h
-  cases hg : applyGeometry p m with
-  | none => simp [hg] at h
-  | some q =>
-    simp only [hg] at h
-    by_cases hk : kingAttacked q p.side = true
-    · simp [hk] at h
-    · simp [hk] at h
-      rw [h]
+    (h : applyMove p m = some p') : kingAttacked p' p.side = false :=
+  (applyMove_spec h).choose_spec.2.2
 
 /-- The turn is handed over. -/
 theorem applyMove_side {p : Position} {m : Move} {p' : Position}
-    (h : applyMove p m = some p') : p'.side = p.side.other :=
-  applyGeometry_side (applySafe_geometry (applyMove_pseudo h).2)
+    (h : applyMove p m = some p') : p'.side = p.side.other := by
+  obtain ⟨e, -, rfl, -⟩ := applyMove_spec h
+  rfl
 
 theorem Rights.le_refl (r : Rights) : Rights.le r r := by
   simp [Rights.le]
@@ -547,26 +443,21 @@ theorem Rights.vacate_le (r : Rights) (s : Square) : Rights.le (r.vacate s) r :=
   unfold Rights.vacate
   split <;> simp [Rights.le]
 
-theorem applyGeometry_rights {p : Position} {m : Move} {p' : Position}
-    (h : applyGeometry p m = some p') : Rights.le p'.rights p.rights := by
-  unfold applyGeometry at h
-  cases hd : describe p m with
-  | none => rw [hd] at h; exact absurd h (by simp)
-  | some e =>
-    rw [hd] at h
-    cases h
-    simp only [enact]
-    have h1 := Rights.vacate_le p.rights m.src
-    have h2 := Rights.vacate_le (p.rights.vacate m.src) m.to
-    split
-    · rename_i f t _
-      exact Rights.le_trans (Rights.vacate_le _ f) (Rights.le_trans h2 h1)
-    · exact Rights.le_trans h2 h1
+theorem enact_rights (p : Position) (m : Move) (e : Effect) :
+    Rights.le (enact p m e).rights p.rights := by
+  simp only [enact]
+  have h1 := Rights.vacate_le p.rights m.src
+  have h2 := Rights.vacate_le (p.rights.vacate m.src) m.to
+  split
+  · rename_i f _ _
+    exact Rights.le_trans (Rights.vacate_le _ f) (Rights.le_trans h2 h1)
+  · exact Rights.le_trans h2 h1
 
 /-- A right, once lost, stays lost. -/
 theorem applyMove_rights {p : Position} {m : Move} {p' : Position}
-    (h : applyMove p m = some p') : Rights.le p'.rights p.rights :=
-  applyGeometry_rights (applySafe_geometry (applyMove_pseudo h).2)
+    (h : applyMove p m = some p') : Rights.le p'.rights p.rights := by
+  obtain ⟨e, -, rfl, -⟩ := applyMove_spec h
+  exact enact_rights p m e
 
 def isCheckmate (p : Position) : Bool :=
   inCheck p && legalMoves p == []
@@ -574,8 +465,7 @@ def isCheckmate (p : Position) : Bool :=
 def isStalemate (p : Position) : Bool :=
   !inCheck p && legalMoves p == []
 
-/-- A pawn move or a capture on `to`. For a legal move this is the
-    effect's `resets`: an en passant capture is a pawn move. -/
+/-- A pawn move or a capture on `to`. An en passant capture is a pawn move. -/
 def resetsHalfmove (p : Position) (m : Move) : Bool :=
   (p.board.get m.src).any (·.kind == .pawn) || (p.board.get m.to).isSome
 
@@ -1026,6 +916,13 @@ def replay (moves : List Move) : GameState :=
 #guard opening.board.length == 32
 #guard Square.all.length == 64
 #guard (legalMoves opening).length == 20
+
+/-- Leaf positions `d` legal moves deep. Published counts check the generator. -/
+def perft (p : Position) : Nat → Nat
+  | 0 => 1
+  | d + 1 => (legalMoves p).foldl (fun n m => n + ((applyMove p m).map (perft · d)).getD 0) 0
+
+#guard perft opening 3 == 8902
 #guard (replay [mv .e .r2 .e .r5]).ply == 0
 
 def scholar : List Move := [
