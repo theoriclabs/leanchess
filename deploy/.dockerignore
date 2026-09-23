@@ -11,3 +11,10 @@ leanchess/data
 leanchess/generated
 leanchess/web/dist
 **/*.sqlite
+**/.env*
+**/*.key
+**/*.pem
+**/*.sqlite-shm
+**/*.sqlite-wal
+**/*.sqlite-journal
+**/*.before-migration-*

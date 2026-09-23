@@ -22,8 +22,8 @@ for repo in leanchess leandb leanreact; do
     echo "deploy: $dir is not a checkout" >&2
     exit 1
   fi
-  if [[ -n "$(git -C "$dir" status --porcelain --untracked-files=no)" ]]; then
-    echo "deploy: $repo has uncommitted changes; a deploy is built from commits" >&2
+  if [[ -n "$(git -C "$dir" status --porcelain)" ]]; then
+    echo "deploy: $repo has uncommitted or untracked changes; a deploy is built from commits" >&2
     exit 1
   fi
   revisions+="$repo@$(git -C "$dir" rev-parse --short=12 HEAD) "
