@@ -65,11 +65,26 @@ def loadWeb (root : String) : IO (List WebFile) := do
         files := { name, mime := mimeOf name, bytes := ← IO.FS.readBinFile path } :: files
   return files
 
+/-- Headers every response carries: the page may not be framed, may not
+    be sniffed away from its type, and is pinned to its own origin for
+    script, style, and object. `connect-src` keeps the documented dev
+    affordance (`?api=` to another loopback port) working; a production
+    page is served from its own origin and never uses it. -/
+def secure (line : Response.Head) : Response.Head :=
+  let allow (line : Response.Head) (k v : String) : Response.Head :=
+    { line with headers := line.headers.insert (Header.Name.ofString! k) (Header.Value.ofString! v) }
+  let line := allow line "content-security-policy"
+    "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; \
+    connect-src 'self' http://127.0.0.1:* http://localhost:* http://[::1]:*; \
+    object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+  let line := allow line "x-frame-options" "DENY"
+  allow line "x-content-type-options" "nosniff"
+
 def fileRespond (mime : String) (bytes : ByteArray) : ContextAsync (Response Body.Any) := do
   let r ← (Response.ok.header! "content-type" mime).fromBytes bytes
   let allow (line : Response.Head) (k v : String) : Response.Head :=
     { line with headers := line.headers.insert (Header.Name.ofString! k) (Header.Value.ofString! v) }
-  let line := allow r.line "access-control-allow-origin" "*"
+  let line := allow (secure r.line) "access-control-allow-origin" "*"
   return { line, body := Body.Any.ofBody r.body, extensions := r.extensions }
 
 def respond (status : Nat) (j : Json) : ContextAsync (Response Body.Any) := do
@@ -85,8 +100,9 @@ def respond (status : Nat) (j : Json) : ContextAsync (Response Body.Any) := do
   let r ← (Response.withStatus code).json j.compress
   let allow (line : Response.Head) (k v : String) : Response.Head :=
     { line with headers := line.headers.insert (Header.Name.ofString! k) (Header.Value.ofString! v) }
+  let line := secure r.line
   -- The page is another origin. The token still has to be presented.
-  let line := allow r.line "access-control-allow-origin" "*"
+  let line := allow line "access-control-allow-origin" "*"
   let line := allow line "access-control-allow-headers" "authorization, content-type"
   let line := allow line "access-control-allow-methods" "GET, POST, OPTIONS"
   return { line, body := Body.Any.ofBody r.body, extensions := r.extensions }
