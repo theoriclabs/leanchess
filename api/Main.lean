@@ -57,7 +57,11 @@ def main (args : List String) : IO UInt32 := do
   -- one (a column with a default, an index, an invariant) is applied here,
   -- after a backup beside the file. A destructive one is refused, and the
   -- server does not start until a person migrates by hand.
-  let tag := (← IO.getRandomBytes 4).foldl (fun acc b => acc ++ (Nat.toDigits 16 b.toNat).asString) ""
+  let hex (b : UInt8) : String :=
+    let d := String.ofList (Nat.toDigits 16 b.toNat)
+    if d.length < 2 then "0" ++ d else d
+  let tag := (← IO.getRandomBytes 4).foldl (fun acc b => acc ++ hex b) ""
+
   let backup : System.FilePath := path.toString ++ s!".before-migration-{tag}"
   match ← LeanDb.migrateOn conn LeanChess.Api.schema { apply := true, backup := some backup } with
   | .error e =>
